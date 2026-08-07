@@ -25,6 +25,21 @@ entities are picked from dropdowns instead of hand-written YAML.
 
 ## Installation
 
+### HACS (recommended)
+
+1. HACS → the ⋮ menu (top right) → **Custom repositories** → add this repo's
+   URL with category **Dashboard**.
+2. Find **AC Control Card** in HACS and install it — this adds the Lovelace
+   resource automatically.
+3. Edit a dashboard → **Add Card** → search for **"AC Control Card"**. The GUI
+   editor will prompt for the required entities.
+
+> This repo is private. HACS needs a GitHub token with access to it configured
+> in the HACS integration options, or the repo made public, before it can add
+> it as a custom repository.
+
+### Manual
+
 1. Copy [`ac-control-card.js`](ac-control-card.js) into your Home Assistant
    `config/www/` folder.
 2. Add it as a Lovelace resource: **Settings → Dashboards → ⋮ → Resources → Add
