@@ -4,7 +4,6 @@
 // Then add a card of type "custom:ac-control-card" via the dashboard UI
 // (search "AC Control Card" in Add Card) and fill in entities in the editor.
 
-const MODE_MAP = { 0: "off", 1: "auto", 2: "cool", 3: "dry", 4: "heat", 5: "fan_only" };
 const SPEED_MAP = {
   silent: "4s",
   quiet: "3.2s",
@@ -296,8 +295,8 @@ class AcControlCard extends HTMLElement {
 
     const presetMode = climate?.attributes?.preset_mode;
     const fanMode = (climate?.attributes?.fan_mode || "").toString().toLowerCase();
-    const modeCode = climate?.attributes?.mode;
-    const modeText = MODE_MAP[modeCode] || "auto";
+    const climateState = climate?.state;
+    const modeText = climateState && climateState !== "unknown" && climateState !== "unavailable" ? climateState : "auto";
     const modeCap = modeText.charAt(0).toUpperCase() + modeText.slice(1);
     const displayName = cfg.name || climate?.attributes?.friendly_name || this._base();
     const unitSetpoint = climate?.attributes?.temperature;
@@ -312,7 +311,6 @@ class AcControlCard extends HTMLElement {
     this._el.targetTemp.textContent = Number.isFinite(tt) ? tt.toFixed(2) : "—";
     this._el.targetTemp.style.color = isHeat ? "#fc0000" : "#23aa08";
 
-    const climateState = climate?.state;
     let color;
     if (!climateState || climateState === "unknown" || climateState === "unavailable") color = "#9e9e9e";
     else if (climateState === "off") color = "white";
