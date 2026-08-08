@@ -14,7 +14,7 @@ entities are picked from dropdowns instead of hand-written YAML.
 - Centered title with the AC's current on-unit setpoint shown top-right.
 - Room temperature reading (1 decimal) and a separate destination/target
   temperature (from an `input_number`) with `‹ ›` steppers that adjust it by
-  exactly 0.05 per tap, sized for touchscreen/tablet use.
+  exactly 0.5 per tap, sized for touchscreen/tablet use.
 - Boost preset toggle (large tap target).
 - Top-left toggle for whichever automation matches the current season (cool vs.
   heat), auto-derived from the climate entity's name unless overridden.

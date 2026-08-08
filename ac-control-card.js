@@ -268,11 +268,11 @@ class AcControlCard extends HTMLElement {
     };
     this._el.inc.addEventListener("click", (e) => {
       e.stopPropagation();
-      stepTarget(0.05);
+      stepTarget(0.5);
     });
     this._el.dec.addEventListener("click", (e) => {
       e.stopPropagation();
-      stepTarget(-0.05);
+      stepTarget(-0.5);
     });
 
     this._el.boostWrap.addEventListener("click", (e) => {
