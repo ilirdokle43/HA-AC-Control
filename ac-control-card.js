@@ -1,10 +1,70 @@
-// AC Control Card — custom Lovelace card for a Midea AC (climate entity)
-// Drop this file in <config>/www/ and add it as a Lovelace resource:
-//   URL: /local/ac-control-card.js   Type: JavaScript module
-// Then add a card of type "custom:ac-control-card" via the dashboard UI
-// (search "AC Control Card" in Add Card) and fill in entities in the editor.
+/**
+ * ac-control-card
+ *
+ * A compact Lovelace card for air-conditioning / heat-pump `climate` entities.
+ * One rounded surface holds a row per room: a fan that spins with the unit and
+ * a boost button beneath it, the room name, current temperature, target
+ * temperature with a difference badge, operating status, and four controls.
+ *
+ * Supports one room (the original flat config) or several rooms via a `rooms:`
+ * list, with a visual editor that can add, reorder, edit and remove rooms.
+ *
+ * No external dependencies: no button-card, no card-mod, no CDN, no fonts.
+ * Icons come from Home Assistant's own <ha-icon>.
+ *
+ * Rendering note
+ * --------------
+ * A standalone `/local/` module cannot reliably obtain LitElement from the
+ * Home Assistant frontend, and bundling a copy of Lit would mean shipping an
+ * external library. So this is a plain custom element: it builds its shadow
+ * DOM once, then performs targeted text/class/style updates. Nothing is ever
+ * re-rendered wholesale, so a rapid sequence of +/- presses is never
+ * interrupted mid-flight.
+ *
+ * Every room's state is computed only from that room's own entities. No value
+ * is cached across rooms, so one unavailable room can never tint another.
+ *
+ * @license MIT
+ */
 
-const SPEED_MAP = {
+const CARD_TYPE = "ac-control-card";
+const CARD_VERSION = "2.0.0";
+
+/* ------------------------------------------------------------------ config */
+
+const DEFAULTS = Object.freeze({
+  temperature_step: 0.5,
+  show_name: true,
+  show_boost: true,
+});
+
+/** Per-room options. These may sit at the top level (single room) or in `rooms[]`. */
+const ROOM_KEYS = [
+  "room_name",
+  "name",
+  "icon",
+  "climate_entity",
+  "room_temp_entity",
+  "target_temp_entity",
+  "season_entity",
+  "automation_cool_entity",
+  "automation_heat_entity",
+];
+
+/** Per-room options that are entity ids. */
+const ROOM_ENTITY_KEYS = ROOM_KEYS.filter((k) => k.endsWith("_entity"));
+
+/** Options that apply to the whole card. */
+const GLOBAL_KEYS = ["temperature_step", "show_name", "show_boost"];
+
+/** Without these a room cannot render anything meaningful. */
+const REQUIRED_ROOM_KEYS = ["climate_entity", "room_temp_entity", "target_temp_entity"];
+
+/**
+ * Fan-icon revolution time per `fan_mode`. Carried over unchanged from v1 so
+ * the spin still reads as the unit's real fan speed.
+ */
+const SPEED_MAP = Object.freeze({
   silent: "4s",
   quiet: "3.2s",
   low: "3s",
@@ -16,356 +76,161 @@ const SPEED_MAP = {
   max: "0.8s",
   turbo: "0.7s",
   auto: "1.6s",
-};
+});
 
-const REQUIRED_FIELDS = [
-  "climate_entity",
-  "room_temp_entity",
-  "target_temp_entity",
-  "season_entity",
-];
+const BOOST_SPEED = "0.5s";
+const DEFAULT_SPEED = "1.6s";
+
+/**
+ * HVAC mode presentation. `key` is the CSS suffix, so colours live in the
+ * stylesheet and stay themable through --acc-* custom properties. The glyph is
+ * always the fan — only its colour and rotation change.
+ */
+const MODES = Object.freeze({
+  off: { label: "OFF", key: "off" },
+  cool: { label: "COOL", key: "cool" },
+  heat: { label: "HEAT", key: "heat" },
+  dry: { label: "DRY", key: "dry" },
+  fan_only: { label: "FAN", key: "fan" },
+  auto: { label: "AUTO", key: "auto" },
+  heat_cool: { label: "AUTO", key: "auto" },
+});
+
+const FAN_ICON = "mdi:fan";
+
+/** hvac_action values that mean the unit is sitting there doing nothing. */
+const IDLE_ACTIONS = new Set(["off", "idle", "standby"]);
+
+/** hvac_action values that move air without heating or cooling. */
+const AIR_ONLY_ACTIONS = new Set(["fan", "drying", "dry"]);
+
+/* ----------------------------------------------------------------- helpers */
+
+const NON_VALUES = new Set(["unknown", "unavailable", "none", ""]);
+
+/** True when `v` is a state string we can safely turn into a number. */
+function isNumeric(v) {
+  if (v === null || v === undefined) return false;
+  const s = String(v).trim();
+  if (s === "" || NON_VALUES.has(s.toLowerCase())) return false;
+  return Number.isFinite(Number(s));
+}
+
+/** True when the entity exists and is not unavailable/unknown. */
+function isAvailable(stateObj) {
+  if (!stateObj) return false;
+  const s = String(stateObj.state).toLowerCase();
+  return s !== "unavailable" && s !== "unknown";
+}
+
+function clamp(n, lo, hi) {
+  if (Number.isFinite(lo)) n = Math.max(lo, n);
+  if (Number.isFinite(hi)) n = Math.min(hi, n);
+  return n;
+}
+
+/** Kill float drift from repeated 0.5 additions (19.000000000000004). */
+function tidy(n) {
+  return Math.round(n * 1000) / 1000;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function icon(name) {
+  const i = document.createElement("ha-icon");
+  if (name) i.setAttribute("icon", name);
+  return i;
+}
+
+/* -------------------------------------------------------------------- card */
 
 class AcControlCard extends HTMLElement {
-  setConfig(config) {
-    this._config = config || {};
-    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._cfg = null;
+    this._rooms = [];
+    this._hass = null;
     this._built = false;
-    this._render();
+    this._el = {};
+    /** Per-target-entity pending value, so rapid presses accumulate without
+     *  ever being *displayed* before HA confirms them. */
+    this._pending = new Map();
   }
 
-  set hass(hass) {
-    this._hass = hass;
-    this._render();
+  /* ------------------------------------------------------------- lifecycle */
+
+  /**
+   * Accepts either the flat single-room shape (v1, backwards compatible) or a
+   * `rooms:` list. The flat shape is normalised into a one-entry list so the
+   * rest of the card only ever deals with one code path.
+   */
+  static normaliseRooms(config) {
+    if (Array.isArray(config.rooms)) {
+      return config.rooms.map((r) => ({ ...r }));
+    }
+    const flat = {};
+    for (const k of ROOM_KEYS) {
+      if (config[k] !== undefined) flat[k] = config[k];
+    }
+    return [flat];
   }
 
-  getCardSize() {
-    return 3;
-  }
-
-  static getConfigElement() {
-    return document.createElement("ac-control-card-editor");
-  }
-
-  static getStubConfig() {
-    return {};
-  }
-
-  _base() {
-    return (this._config.climate_entity || "").split(".")[1] || "";
-  }
-
-  _derived(key, domain, suffix) {
-    return this._config[key] || `${domain}.${this._base()}${suffix}`;
-  }
-
-  _missingFields() {
-    return REQUIRED_FIELDS.filter((f) => !this._config[f]);
-  }
-
-  _render() {
-    if (!this._hass || !this._config) return;
-
-    const missing = this._missingFields();
-    if (missing.length) {
-      this._built = false;
-      this.shadowRoot.innerHTML = `
-        <ha-card>
-          <div style="padding:16px;color:var(--secondary-text-color);font-size:14px;">
-            AC Control Card: please configure ${missing.join(", ")} in the card editor.
-          </div>
-        </ha-card>`;
-      return;
+  /**
+   * Structural problems throw (the config is unusable); merely incomplete
+   * configs do not, so the GUI editor stays usable while entities are still
+   * being picked. Those surface as an in-card notice instead.
+   */
+  setConfig(config) {
+    if (!config || typeof config !== "object") {
+      throw new Error(`${CARD_TYPE}: configuration is missing.`);
+    }
+    if (config.rooms !== undefined && !Array.isArray(config.rooms)) {
+      throw new Error(`${CARD_TYPE}: \`rooms\` must be a list.`);
     }
 
-    if (!this._built) {
-      this._buildDom();
-      this._built = true;
-    }
-    this._update();
-  }
-
-  _buildDom() {
-    const root = this.shadowRoot;
-    root.innerHTML = `
-      <style>
-        :host { display: block; }
-        .wrap {
-          position: relative;
-          padding: 10px 12px 12px;
-          height: 140px;
-          box-sizing: border-box;
-          display: flex;
-          flex-direction: column;
-          cursor: pointer;
-          container-type: inline-size;
-          container-name: ac-card;
-        }
-        .header {
-          display: flex;
-          align-items: center;
-          padding-bottom: 8px;
-          margin-bottom: 8px;
-          border-bottom: 1px solid var(--divider-color, rgba(255, 255, 255, 0.12));
-        }
-        .toggle-btn { display: flex; z-index: 2; }
-        .toggle-btn ha-icon { --mdc-icon-size: 34px; }
-        .title {
-          flex: 1;
-          text-align: center;
-          font-size: 21px;
-          font-weight: bold;
-        }
-        .ac-setpoint {
-          min-width: 34px;
-          text-align: right;
-          font-size: 13px;
-          font-weight: bold;
-          color: var(--primary-text-color);
-          opacity: 0.75;
-        }
-        .body {
-          flex: 1;
-          display: grid;
-          grid-template-columns: 70px 55px 1fr 70px;
-          align-items: stretch;
-          column-gap: 6px;
-        }
-        .col {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-        }
-        .fan-wrap { cursor: pointer; }
-        .fan-icon { --mdc-icon-size: 64px; display: inline-block; }
-        .mode-text {
-          font-size: 14px;
-          line-height: 1.35;
-          text-align: center;
-        }
-        .temp-col { gap: 0px; }
-        .room-temp {
-          font-size: 18px;
-          font-weight: bold;
-          color: #ffa31a;
-          white-space: nowrap;
-        }
-        .target-row {
-          display: flex;
-          align-items: center;
-          gap: 2px;
-        }
-        .target-row ha-icon {
-          --mdc-icon-size: 32px;
-          color: #ffa31a;
-          cursor: pointer;
-          padding: 8px 12px;
-          box-sizing: content-box;
-        }
-        .target-temp {
-          font-size: 24px;
-          font-weight: bold;
-          color: #ffa31a;
-          white-space: nowrap;
-          position: relative;
-          top: -4px;
-        }
-        .boost-wrap { cursor: pointer; height: 100%; }
-        .turbo { --mdc-icon-size: 56px; cursor: pointer; }
-        @keyframes rotating {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        @container ac-card (max-width: 440px) {
-          .wrap { height: 130px; padding: 8px 8px 10px; }
-          .toggle-btn ha-icon { --mdc-icon-size: 26px; }
-          .title { font-size: 16px; }
-          .ac-setpoint { min-width: 26px; font-size: 11px; }
-          .body { grid-template-columns: 50px 42px 1fr 50px; column-gap: 3px; }
-          .fan-icon { --mdc-icon-size: 44px; transform: translateY(-6px); }
-          .mode-text { font-size: 10.5px; }
-          .room-temp { font-size: 14px; }
-          .target-row { transform: translateY(-6px); }
-          .target-row ha-icon { --mdc-icon-size: 24px; padding: 8px; }
-          .target-temp { font-size: 14px; top: 0; }
-          .turbo { --mdc-icon-size: 38px; transform: translateX(-8px); }
-        }
-      </style>
-      <ha-card class="wrap">
-        <div class="header">
-          <div class="toggle-btn"><ha-icon icon="mdi:toggle-switch"></ha-icon></div>
-          <div class="title"></div>
-          <div class="ac-setpoint"></div>
-        </div>
-        <div class="body">
-          <div class="col fan-wrap"><ha-icon class="fan-icon" icon="mdi:fan"></ha-icon></div>
-          <div class="col mode-text"></div>
-          <div class="col temp-col">
-            <div class="room-temp"></div>
-            <div class="target-row">
-              <ha-icon class="dec" icon="mdi:chevron-left"></ha-icon>
-              <span class="target-temp"></span>
-              <ha-icon class="inc" icon="mdi:chevron-right"></ha-icon>
-            </div>
-          </div>
-          <div class="col boost-wrap"><ha-icon class="turbo" icon="mdi:rocket"></ha-icon></div>
-        </div>
-      </ha-card>
-    `;
-
-    this._el = {
-      wrap: root.querySelector(".wrap"),
-      acSetpoint: root.querySelector(".ac-setpoint"),
-      title: root.querySelector(".title"),
-      modeText: root.querySelector(".mode-text"),
-      roomTemp: root.querySelector(".room-temp"),
-      targetTemp: root.querySelector(".target-temp"),
-      fanIcon: root.querySelector(".fan-icon"),
-      fanWrap: root.querySelector(".fan-wrap"),
-      toggleBtn: root.querySelector(".toggle-btn"),
-      toggleIcon: root.querySelector(".toggle-btn ha-icon"),
-      turboIcon: root.querySelector(".turbo"),
-      boostWrap: root.querySelector(".boost-wrap"),
-      dec: root.querySelector(".dec"),
-      inc: root.querySelector(".inc"),
-    };
-
-    this._el.wrap.addEventListener("click", () => {
-      this.dispatchEvent(
-        new CustomEvent("hass-more-info", {
-          detail: { entityId: this._config.climate_entity },
-          bubbles: true,
-          composed: true,
-        })
+    const rooms = AcControlCard.normaliseRooms(config);
+    if (!rooms.length) {
+      throw new Error(
+        `${CARD_TYPE}: \`rooms\` is empty. Add at least one room, or use the ` +
+          "flat single-room form with climate_entity / room_temp_entity / " +
+          "target_temp_entity.",
       );
-    });
+    }
 
-    this._el.fanWrap.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this._hass.callService("homeassistant", "toggle", {
-        entity_id: this._config.climate_entity,
-      });
-    });
-
-    this._el.toggleBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (this._autoEntityId) {
-        this._hass.callService("homeassistant", "toggle", {
-          entity_id: this._autoEntityId,
-        });
+    rooms.forEach((room, i) => {
+      const where = Array.isArray(config.rooms) ? `rooms[${i}]` : "config";
+      for (const key of ROOM_ENTITY_KEYS) {
+        const v = room[key];
+        if (v !== undefined && v !== "" && (typeof v !== "string" || !v.includes("."))) {
+          throw new Error(
+            `${CARD_TYPE}: ${where}.${key} must be an entity id, got ${JSON.stringify(v)}.`,
+          );
+        }
       }
     });
 
-    const stepTarget = (delta) => {
-      const cur = parseFloat(this._hass.states[this._config.target_temp_entity]?.state);
-      if (!Number.isFinite(cur)) return;
-      const next = Math.round((cur + delta) * 100) / 100;
-      this._hass.callService("input_number", "set_value", {
-        entity_id: this._config.target_temp_entity,
-        value: next,
-      });
-    };
-    this._el.inc.addEventListener("click", (e) => {
-      e.stopPropagation();
-      stepTarget(0.5);
-    });
-    this._el.dec.addEventListener("click", (e) => {
-      e.stopPropagation();
-      stepTarget(-0.5);
-    });
-
-    this._el.boostWrap.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const cur = this._hass.states[this._config.climate_entity]?.attributes?.preset_mode;
-      this._hass.callService("climate", "set_preset_mode", {
-        entity_id: this._config.climate_entity,
-        preset_mode: cur === "boost" ? "none" : "boost",
-      });
-    });
-  }
-
-  _update() {
-    const hass = this._hass;
-    const cfg = this._config;
-    const climate = hass.states[cfg.climate_entity];
-    const roomTemp = hass.states[cfg.room_temp_entity];
-    const setTemp = hass.states[cfg.target_temp_entity];
-    const season = hass.states[cfg.season_entity];
-    const isHeat = season?.state === "on";
-
-    const presetMode = climate?.attributes?.preset_mode;
-    const fanMode = (climate?.attributes?.fan_mode || "").toString().toLowerCase();
-    const climateState = climate?.state;
-    const modeText = climateState && climateState !== "unknown" && climateState !== "unavailable" ? climateState : "auto";
-    const modeCap = modeText.charAt(0).toUpperCase() + modeText.slice(1);
-    const displayName = cfg.name || climate?.attributes?.friendly_name || this._base();
-    const unitSetpoint = climate?.attributes?.temperature;
-
-    this._el.title.textContent = displayName;
-    this._el.modeText.innerHTML = `${modeCap}<br>${fanMode || "—"}`;
-    this._el.acSetpoint.textContent = Number.isFinite(unitSetpoint) ? `${unitSetpoint}°` : "—";
-
-    const rt = parseFloat(roomTemp?.state);
-    this._el.roomTemp.textContent = Number.isFinite(rt) ? `${rt.toFixed(1)} °C` : "—";
-    const tt = parseFloat(setTemp?.state);
-    this._el.targetTemp.textContent = Number.isFinite(tt) ? tt.toFixed(2) : "—";
-    this._el.targetTemp.style.color = isHeat ? "#fc0000" : "#23aa08";
-
-    let color;
-    if (!climateState || climateState === "unknown" || climateState === "unavailable") color = "#9e9e9e";
-    else if (climateState === "off") color = "white";
-    else color = isHeat ? "#fc0000" : "#0586f7";
-    this._el.fanIcon.style.color = color;
-
-    let anim = "none";
-    if (climateState && climateState !== "off" && climateState !== "unknown" && climateState !== "unavailable") {
-      let duration = SPEED_MAP[fanMode] || "1.6s";
-      if (presetMode === "boost") duration = "0.5s";
-      anim = `rotating ${duration} linear infinite`;
+    const step = Number(config.temperature_step);
+    if (config.temperature_step !== undefined && (!Number.isFinite(step) || step <= 0)) {
+      throw new Error(`${CARD_TYPE}: temperature_step must be a positive number.`);
     }
-    this._el.fanIcon.style.animation = anim;
 
-    this._el.turboIcon.style.color = presetMode === "boost" ? "#ffa31a" : "gray";
+    this._cfg = {
+      ...DEFAULTS,
+      ...config,
+      temperature_step: Number.isFinite(step) && step > 0 ? step : DEFAULTS.temperature_step,
+    };
+    this._rooms = rooms;
 
-    const autoEntityId = isHeat
-      ? this._derived("automation_heat_entity", "automation", "_command_winter")
-      : this._derived("automation_cool_entity", "automation", "_command");
-    this._autoEntityId = autoEntityId;
-    const autoState = hass.states[autoEntityId];
-    const on = autoState?.state === "on";
-    this._el.toggleIcon.setAttribute("icon", on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline");
-    this._el.toggleIcon.style.color = on ? "#23aa08" : "#fc0000";
-  }
-}
-
-const LABELS = {
-  name: "Display name",
-  climate_entity: "AC (climate) entity",
-  room_temp_entity: "Room temperature sensor",
-  target_temp_entity: "Destination/target temperature (input_number)",
-  season_entity: "Heat/Cool selector (on = heat, off = cool)",
-  automation_cool_entity: "Automation — cool (optional, auto-derived)",
-  automation_heat_entity: "Automation — heat (optional, auto-derived)",
-};
-
-const SCHEMA = [
-  { name: "name", selector: { text: {} } },
-  { name: "climate_entity", required: true, selector: { entity: { domain: "climate" } } },
-  { name: "room_temp_entity", required: true, selector: { entity: { domain: "sensor" } } },
-  { name: "target_temp_entity", required: true, selector: { entity: { domain: "input_number" } } },
-  {
-    name: "season_entity",
-    required: true,
-    selector: { entity: { domain: ["input_boolean", "binary_sensor"] } },
-  },
-  { name: "automation_cool_entity", selector: { entity: { domain: "automation" } } },
-  { name: "automation_heat_entity", selector: { entity: { domain: "automation" } } },
-];
-
-class AcControlCardEditor extends HTMLElement {
-  setConfig(config) {
-    this._config = config || {};
-    this._render();
+    this._built = false;
+    this._pending.clear();
+    if (this.shadowRoot) this.shadowRoot.innerHTML = "";
+    if (this._hass) this._render();
   }
 
   set hass(hass) {
@@ -373,41 +238,1348 @@ class AcControlCardEditor extends HTMLElement {
     this._render();
   }
 
-  connectedCallback() {
-    this._render();
+  get hass() {
+    return this._hass;
   }
 
-  _render() {
-    if (!this._hass || !this._config) return;
-    if (!this._form) {
-      this._form = document.createElement("ha-form");
-      this._form.addEventListener("value-changed", (ev) => {
-        ev.stopPropagation();
-        this._config = ev.detail.value;
-        this.dispatchEvent(
-          new CustomEvent("config-changed", {
-            detail: { config: this._config },
-            bubbles: true,
-            composed: true,
-          })
-        );
-      });
-      this.innerHTML = "";
-      this.appendChild(this._form);
+  get _multi() {
+    return this._rooms.length > 1;
+  }
+
+  getCardSize() {
+    return 1 + this._rooms.length;
+  }
+
+  /** Sections dashboard sizing. One HA grid row is ~56px. */
+  getGridOptions() {
+    const px = 28 + this._rooms.length * 78;
+    const rows = Math.max(2, Math.ceil(px / 56));
+    return { columns: 12, rows, min_columns: 6, min_rows: Math.max(2, rows - 1) };
+  }
+
+  getLayoutOptions() {
+    const g = this.getGridOptions();
+    return {
+      grid_columns: g.columns,
+      grid_rows: g.rows,
+      grid_min_columns: g.min_columns,
+      grid_min_rows: g.min_rows,
+    };
+  }
+
+  static getStubConfig() {
+    return {
+      type: `custom:${CARD_TYPE}`,
+      rooms: [
+        {
+          room_name: "Room",
+          climate_entity: "",
+          room_temp_entity: "",
+          target_temp_entity: "",
+        },
+      ],
+    };
+  }
+
+  static async getConfigElement() {
+    if (!customElements.get("ha-form")) return undefined;
+    return document.createElement(`${CARD_TYPE}-editor`);
+  }
+
+  /* ------------------------------------------------------------ state read */
+
+  _stateOf(id) {
+    if (!id || !this._hass) return undefined;
+    return this._hass.states[id];
+  }
+
+  _roomState(room, key) {
+    return this._stateOf(room[key]);
+  }
+
+  _roomOn(room, key) {
+    const s = this._roomState(room, key);
+    return !!s && s.state === "on";
+  }
+
+  /** `on` on the season entity means heating season. Absent means cooling. */
+  _isHeat(room) {
+    return this._roomOn(room, "season_entity");
+  }
+
+  /**
+   * Automation entity for the current season. The derivation is unchanged from
+   * v1: `automation.<climate object id>_command` when cooling and
+   * `..._command_winter` when heating, unless overridden.
+   */
+  _autoEntity(room) {
+    const base = String(room.climate_entity || "").split(".")[1] || "";
+    if (this._isHeat(room)) {
+      return room.automation_heat_entity || (base ? `automation.${base}_command_winter` : "");
     }
-    this._form.hass = this._hass;
-    this._form.schema = SCHEMA;
-    this._form.data = this._config;
-    this._form.computeLabel = (schema) => LABELS[schema.name] || schema.name;
+    return room.automation_cool_entity || (base ? `automation.${base}_command` : "");
+  }
+
+  /**
+   * Per-room HVAC descriptor, computed fresh from *this* room's climate entity
+   * on every render. Never cached, never shared between rows.
+   */
+  _mode(room) {
+    const s = this._roomState(room, "climate_entity");
+    if (!isAvailable(s)) {
+      return { label: "UNAVAILABLE", key: "na", on: false, available: false };
+    }
+    const m = MODES[s.state] || { label: String(s.state).toUpperCase(), key: "auto" };
+    return { ...m, on: s.state !== "off", available: true };
+  }
+
+  /**
+   * True when the unit is moving air: the fan spins for this, and only this.
+   *
+   * `hvac_action` is authoritative when the integration reports it, so a unit
+   * that is on but coasting (idle) shows a stationary fan. Without it, being
+   * in any mode other than `off` is the best signal available.
+   */
+  _blowing(room) {
+    const s = this._roomState(room, "climate_entity");
+    if (!isAvailable(s) || s.state === "off") return false;
+    const action = s.attributes && s.attributes.hvac_action;
+    if (action) return !IDLE_ACTIONS.has(String(action).toLowerCase());
+    return true;
+  }
+
+  /** True when the unit is actually producing heat or cold (drives the glow). */
+  _running(room) {
+    if (!this._blowing(room)) return false;
+    const s = this._roomState(room, "climate_entity");
+    const action = s.attributes && s.attributes.hvac_action;
+    if (action) return !AIR_ONLY_ACTIONS.has(String(action).toLowerCase());
+    return true;
+  }
+
+  /** True when this room -- and only this room -- is in boost. */
+  _boostActive(room) {
+    const s = this._roomState(room, "climate_entity");
+    if (!isAvailable(s)) return false;
+    return (s.attributes && s.attributes.preset_mode) === "boost";
+  }
+
+  _iconFor(room) {
+    return room.icon || FAN_ICON;
+  }
+
+  _fanSpin(room) {
+    if (!this._blowing(room)) return "none";
+    const climate = this._roomState(room, "climate_entity");
+    const attrs = (climate && climate.attributes) || {};
+    const fan = String(attrs.fan_mode || "").toLowerCase();
+    const duration = attrs.preset_mode === "boost" ? BOOST_SPEED : SPEED_MAP[fan] || DEFAULT_SPEED;
+    return `acc-spin ${duration} linear infinite`;
+  }
+
+  _boostSupported(room) {
+    if (this._cfg.show_boost === false) return false;
+    const s = this._roomState(room, "climate_entity");
+    const modes = s && s.attributes && s.attributes.preset_modes;
+    if (Array.isArray(modes)) return modes.includes("boost");
+    // Entity is unavailable or does not advertise its presets: keep the button
+    // if boost is currently active, otherwise assume unsupported.
+    return !!(s && s.attributes && s.attributes.preset_mode === "boost");
+  }
+
+  _tempUnit(room) {
+    const cfgUnit =
+      this._hass &&
+      this._hass.config &&
+      this._hass.config.unit_system &&
+      this._hass.config.unit_system.temperature;
+    if (cfgUnit) return cfgUnit;
+    const s = room && this._roomState(room, "room_temp_entity");
+    const u = s && s.attributes && s.attributes.unit_of_measurement;
+    return u || "°C";
+  }
+
+  _degree(room) {
+    const unit = this._tempUnit(room);
+    return unit.startsWith("°") ? "°" : ` ${unit}`;
+  }
+
+  _locale() {
+    const l = this._hass && this._hass.locale && this._hass.locale.language;
+    return l || (typeof navigator !== "undefined" ? navigator.language : "en") || "en";
+  }
+
+  /** Locale-aware fixed-decimal number, e.g. "22,6" in de-DE. */
+  _num(value, digits) {
+    const d = digits === undefined ? 1 : digits;
+    try {
+      return new Intl.NumberFormat(this._locale(), {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d,
+      }).format(value);
+    } catch (_e) {
+      return Number(value).toFixed(d);
+    }
+  }
+
+  _roomName(room) {
+    if (room.room_name) return room.room_name;
+    if (room.name) return room.name; // v1 spelling
+    for (const k of ["climate_entity", "room_temp_entity", "target_temp_entity"]) {
+      const s = this._roomState(room, k);
+      if (s && s.attributes && s.attributes.friendly_name) return s.attributes.friendly_name;
+    }
+    const base = String(room.climate_entity || "").split(".")[1] || "";
+    return base || "AC";
+  }
+
+  /* --------------------------------------------------------------- actions */
+
+  _callService(domain, service, data, target) {
+    if (!this._hass || typeof this._hass.callService !== "function") return;
+    this._hass.callService(domain, service, data || {}, target);
+  }
+
+  /** Unchanged from v1: toggles the climate entity itself. */
+  _pressPower(room, ev) {
+    ev.stopPropagation();
+    if (!room.climate_entity) return;
+    if (!isAvailable(this._roomState(room, "climate_entity"))) return;
+    this._callService("homeassistant", "toggle", {}, { entity_id: room.climate_entity });
+  }
+
+  /** Unchanged from v1: toggles the season-appropriate automation. */
+  _pressAuto(room, ev) {
+    ev.stopPropagation();
+    const id = this._autoEntity(room);
+    if (!id || !this._stateOf(id)) return;
+    this._callService("homeassistant", "toggle", {}, { entity_id: id });
+  }
+
+  /** Unchanged from v1: flips the climate entity's boost preset. */
+  _pressBoost(room, ev) {
+    ev.stopPropagation();
+    const s = this._roomState(room, "climate_entity");
+    if (!isAvailable(s)) return;
+    const cur = s.attributes && s.attributes.preset_mode;
+    this._callService(
+      "climate",
+      "set_preset_mode",
+      { preset_mode: cur === "boost" ? "none" : "boost" },
+      { entity_id: room.climate_entity },
+    );
+  }
+
+  /**
+   * Step a room's target temperature.
+   *
+   * The new number is never written to the DOM -- the display only follows
+   * `hass`. But the requested value is remembered per target entity so that
+   * three fast taps go 19 -> 19.5 -> 20 -> 20.5 instead of sending 19.5 three
+   * times while the round trip is still in flight.
+   */
+  _step(room, dir, ev) {
+    ev.stopPropagation();
+    const id = room.target_temp_entity;
+    const s = this._stateOf(id);
+    if (!isAvailable(s)) return;
+
+    const attrs = s.attributes || {};
+    const min = Number(attrs.min);
+    const max = Number(attrs.max);
+    const step = this._cfg.temperature_step;
+
+    const base = this._effectiveTarget(room);
+    if (!Number.isFinite(base)) return;
+
+    const next = tidy(clamp(base + dir * step, min, max));
+    if (next === base) return; // already at the limit
+
+    this._pending.set(id, { value: next, at: Date.now() });
+    this._callService("input_number", "set_value", { value: next }, { entity_id: id });
+    this._syncStepButtons(this._refsFor(room), room);
+  }
+
+  /** Pending value if still fresh, else the confirmed state. */
+  _effectiveTarget(room) {
+    const id = room.target_temp_entity;
+    const p = this._pending.get(id);
+    if (p && Date.now() - p.at < 4000) return p.value;
+    const s = this._stateOf(id);
+    return s && isNumeric(s.state) ? Number(s.state) : NaN;
+  }
+
+  _fireMoreInfo(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(
+      new CustomEvent("hass-more-info", {
+        detail: { entityId },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  /** Minimal but correct support for HA's standard action config. */
+  _cardAction(room) {
+    const cfg = this._cfg.tap_action || { action: "more-info" };
+    const r = room || this._rooms[0] || {};
+    const fallbackEntity = r.climate_entity || r.room_temp_entity || r.target_temp_entity;
+
+    switch (cfg.action) {
+      case "none":
+        return;
+      case "more-info":
+        this._fireMoreInfo(cfg.entity || fallbackEntity);
+        return;
+      case "toggle": {
+        const id = cfg.entity || r.climate_entity;
+        if (id) this._callService("homeassistant", "toggle", {}, { entity_id: id });
+        return;
+      }
+      case "navigate":
+        if (cfg.navigation_path) {
+          history.pushState(null, "", cfg.navigation_path);
+          window.dispatchEvent(
+            new CustomEvent("location-changed", { bubbles: true, composed: true }),
+          );
+        }
+        return;
+      case "url":
+        if (cfg.url_path) window.open(cfg.url_path, cfg.new_tab === false ? "_self" : "_blank");
+        return;
+      case "call-service":
+      case "perform-action": {
+        const full = cfg.perform_action || cfg.service;
+        if (!full || !full.includes(".")) return;
+        const [d, s] = full.split(".");
+        this._callService(d, s, cfg.data || cfg.service_data || {}, cfg.target);
+        return;
+      }
+      default:
+        this._fireMoreInfo(fallbackEntity);
+    }
+  }
+
+  /* ----------------------------------------------------------------- build */
+
+  _refsFor(room) {
+    return this._el.rooms[this._rooms.indexOf(room)];
+  }
+
+  _buildControls(room) {
+    const wrap = el("div", "controls");
+
+    const mk = (cls, label, child) => {
+      const b = el("button", `ctl ${cls}`);
+      b.type = "button";
+      b.title = label;
+      if (typeof child === "string") b.textContent = child;
+      else b.appendChild(child);
+      b.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+      });
+      wrap.appendChild(b);
+      return b;
+    };
+
+    const minus = mk("minus", "Lower target temperature", icon("mdi:minus"));
+    const plus = mk("plus", "Raise target temperature", icon("mdi:plus"));
+    const power = mk("power", "Toggle the air conditioner", icon("mdi:power"));
+    const auto = mk("auto", "Toggle automatic control", "AUTO");
+
+    minus.addEventListener("click", (e) => this._step(room, -1, e));
+    plus.addEventListener("click", (e) => this._step(room, +1, e));
+    power.addEventListener("click", (e) => this._pressPower(room, e));
+    auto.addEventListener("click", (e) => this._pressAuto(room, e));
+
+    return { wrap, minus, plus, power, auto };
+  }
+
+  /**
+   * The far-left stack: the fan above, the boost control directly beneath it.
+   *
+   * Boost lives here rather than in the right-hand control row so that row
+   * stays four buttons wide at every width -- on a phone the four fit one line
+   * instead of wrapping AUTO onto a second.
+   */
+  _buildStatusCol(room) {
+    const col = el("div", "statuscol");
+
+    const box = el("div", "modeicon");
+    box.setAttribute("aria-hidden", "true");
+    box.appendChild(icon(FAN_ICON));
+
+    const boost = el("button", "ctl boost");
+    boost.type = "button";
+    boost.title = "Toggle boost";
+    boost.appendChild(icon("mdi:rocket-launch"));
+    boost.addEventListener("click", (e) => this._pressBoost(room, e));
+    boost.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+    });
+
+    col.append(box, boost);
+    return { col, box, glyph: box.firstChild, boost };
+  }
+
+  _buildRoomText() {
+    const text = el("div", "roomtext");
+    const name = el("div", "name");
+    const cur = el("div", "big cur");
+    const line = el("div", "targetline");
+    const target = el("span", "target", "Target —");
+    const delta = el("span", "delta");
+    delta.hidden = true;
+    line.append(target, delta);
+    const status = el("div", "status");
+    const statusMain = el("span", "statusmain", "—");
+    const statusSub = el("span", "statussub");
+    status.append(statusMain, statusSub);
+    text.append(name, cur, line, status);
+    return { text, name, cur, target, delta, status, statusMain, statusSub };
+  }
+
+  _build() {
+    const root = this.shadowRoot;
+    root.innerHTML = `<style>${AcControlCard.styles}</style>`;
+
+    const card = document.createElement("ha-card");
+    const surface = el("div", "surface");
+    surface.setAttribute("role", "button");
+    surface.tabIndex = 0;
+
+    const notice = el("div", "notice");
+    notice.hidden = true;
+    surface.appendChild(notice);
+
+    this._el = { surface, notice, rooms: [] };
+
+    const list = el("div", "rooms");
+    for (const room of this._rooms) {
+      const row = el("div", "roomrow");
+      const status = this._buildStatusCol(room);
+      const t = this._buildRoomText();
+      const c = this._buildControls(room);
+      row.append(status.col, t.text, c.wrap);
+      list.appendChild(row);
+      this._el.rooms.push({
+        row,
+        statusCol: status.col,
+        modeIcon: status.box,
+        modeGlyph: status.glyph,
+        boost: status.boost,
+        name: t.name,
+        cur: t.cur,
+        target: t.target,
+        delta: t.delta,
+        status: t.status,
+        statusMain: t.statusMain,
+        statusSub: t.statusSub,
+        minus: c.minus,
+        plus: c.plus,
+        power: c.power,
+        auto: c.auto,
+      });
+    }
+    surface.appendChild(list);
+
+    surface.addEventListener("click", () => this._cardAction(this._rooms[0]));
+    surface.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this._cardAction(this._rooms[0]);
+      }
+    });
+
+    card.appendChild(surface);
+    root.appendChild(card);
+    this._built = true;
+  }
+
+  /* ---------------------------------------------------------------- render */
+
+  _render() {
+    if (!this._cfg || !this._hass) return;
+    if (!this._built) this._build();
+
+    this._renderNotice();
+    this._rooms.forEach((room, i) => {
+      const refs = this._el.rooms[i];
+      this._renderRoom(refs, room);
+      this._renderControls(refs, room);
+    });
+  }
+
+  /**
+   * Two different problems, one strip: entities named in the config that the
+   * backend does not know about, and rooms that are not fully configured yet.
+   */
+  _renderNotice() {
+    const missing = [];
+    const unconfigured = [];
+
+    this._rooms.forEach((room) => {
+      const gaps = REQUIRED_ROOM_KEYS.filter((k) => !room[k]);
+      if (gaps.length) {
+        unconfigured.push(this._multi ? `${this._roomName(room)} (${gaps.join(", ")})` : gaps.join(", "));
+      }
+      for (const k of ROOM_ENTITY_KEYS) {
+        if (room[k] && !this._hass.states[room[k]]) missing.push(room[k]);
+      }
+    });
+
+    const lines = [];
+    if (unconfigured.length) lines.push(`Not configured yet: ${unconfigured.join("; ")}`);
+    if (missing.length) lines.push(`Entity not found: ${[...new Set(missing)].join(", ")}`);
+
+    const n = this._el.notice;
+    if (!lines.length) {
+      n.hidden = true;
+      n.textContent = "";
+      return;
+    }
+    n.hidden = false;
+    n.textContent = lines.join(" · ");
+  }
+
+  _renderRoom(refs, room) {
+    const mode = this._mode(room);
+    const deg = this._degree(room);
+    const climate = this._roomState(room, "climate_entity");
+    const attrs = (climate && climate.attributes) || {};
+    const heat = this._isHeat(room);
+
+    refs.row.classList.toggle("unavailable", !mode.available);
+
+    refs.modeIcon.className = `modeicon m-${mode.key}${this._running(room) ? " running" : ""}`;
+    refs.modeGlyph.setAttribute("icon", this._iconFor(room));
+    refs.modeGlyph.style.animation = this._fanSpin(room);
+
+    // Status: mode word, then the unit's own fan speed and setpoint as muted
+    // context (both carried over from v1's two-line mode text).
+    refs.statusMain.textContent = mode.label;
+    refs.status.className = `status m-${mode.key}`;
+    const bits = [];
+    if (mode.available && mode.on) {
+      if (attrs.fan_mode) bits.push(String(attrs.fan_mode).toUpperCase());
+      if (attrs.preset_mode === "boost") bits.push("BOOST");
+      if (Number.isFinite(Number(attrs.temperature))) {
+        bits.push(`${this._num(Number(attrs.temperature), 0)}${deg}`);
+      }
+    }
+    refs.statusSub.textContent = bits.length ? ` · ${bits.join(" · ")}` : "";
+
+    if (this._cfg.show_name === false) {
+      refs.name.hidden = true;
+    } else {
+      refs.name.hidden = false;
+      refs.name.textContent = this._roomName(room);
+    }
+
+    const cur = this._roomState(room, "room_temp_entity");
+    const curOk = cur && isNumeric(cur.state);
+    refs.cur.textContent = curOk ? `${this._num(Number(cur.state))}${deg}` : "—";
+
+    const tgt = this._roomState(room, "target_temp_entity");
+    // Must stay a real boolean: classList.toggle(name, undefined) *toggles*
+    // rather than forcing, which would let both classes accumulate.
+    const tgtOk = !!(tgt && isNumeric(tgt.state));
+    refs.target.textContent = tgtOk ? `Target ${this._num(Number(tgt.state))}${deg}` : "Target —";
+    // v1 tinted the destination temperature by season. Only rooms that
+    // actually configure a season entity get the tint; the rest stay neutral.
+    const seasonKnown = !!room.season_entity;
+    refs.target.classList.toggle("heat", tgtOk && seasonKnown && heat);
+    refs.target.classList.toggle("cool", tgtOk && seasonKnown && !heat);
+
+    // Drop the pending value once HA confirms it.
+    const p = this._pending.get(room.target_temp_entity);
+    if (p && tgtOk && Number(tgt.state) === p.value) {
+      this._pending.delete(room.target_temp_entity);
+    }
+
+    // Difference badge. Only ever rendered from two real numbers, so it can
+    // never print NaN / unknown.
+    const d = refs.delta;
+    if (curOk && tgtOk) {
+      const diff = tidy(Number(cur.state) - Number(tgt.state));
+      d.hidden = false;
+      if (Math.abs(diff) < 0.05) {
+        d.textContent = "at target";
+        d.className = "delta even";
+      } else {
+        d.textContent = `${diff > 0 ? "▲" : "▼"} ${this._num(Math.abs(diff))}${deg}`;
+        d.className = `delta ${diff > 0 ? "above" : "below"}`;
+      }
+    } else {
+      d.hidden = true;
+      d.textContent = "";
+    }
+
+    refs.row.setAttribute(
+      "aria-label",
+      `${this._roomName(room)}. ${mode.label}. ` +
+        `Current ${curOk ? this._num(Number(cur.state)) + deg : "unavailable"}, ` +
+        `target ${tgtOk ? this._num(Number(tgt.state)) + deg : "unavailable"}.`,
+    );
+  }
+
+  _renderControls(refs, room) {
+    const name = this._roomName(room);
+    const mode = this._mode(room);
+
+    // Power follows the climate entity only. Assigned wholesale so a mode
+    // change cannot leave the previous mode's colour class behind.
+    const powerOn = mode.available && mode.on;
+    refs.power.disabled = !mode.available;
+    refs.power.className = `ctl power m-${mode.key}${powerOn ? " on" : ""}`;
+    refs.power.setAttribute("aria-pressed", String(powerOn));
+    refs.power.setAttribute(
+      "aria-label",
+      `${name}: ${mode.label}. ${mode.on ? "Turn off" : "Turn on"}`,
+    );
+
+    // Boost lives under the fan but follows the climate entity only, exactly
+    // as it did when it sat in the control row.
+    const boostable = this._boostSupported(room);
+    refs.boost.hidden = !boostable;
+    if (boostable) {
+      const boostOn = this._boostActive(room);
+      refs.boost.disabled = !mode.available;
+      refs.boost.classList.toggle("on", boostOn);
+      refs.boost.setAttribute("aria-pressed", String(boostOn));
+      refs.boost.setAttribute(
+        "aria-label",
+        `${name}: boost ${mode.available ? (boostOn ? "on" : "off") : "unavailable"}`,
+      );
+    }
+
+    // AUTO follows its own automation entity, which may be fine even when the
+    // climate entity is not.
+    const autoId = this._autoEntity(room);
+    const autoState = this._stateOf(autoId);
+    const autoKnown = isAvailable(autoState);
+    const autoOn = autoKnown && autoState.state === "on";
+    refs.auto.hidden = !autoId;
+    refs.auto.disabled = !autoKnown;
+    refs.auto.classList.toggle("on", autoOn);
+    refs.auto.classList.toggle("off", autoKnown && !autoOn);
+    refs.auto.setAttribute("aria-pressed", String(autoOn));
+    refs.auto.setAttribute(
+      "aria-label",
+      `${name}: automatic control ${autoKnown ? (autoOn ? "enabled" : "disabled") : "unavailable"}`,
+    );
+    refs.auto.title = autoKnown
+      ? `Automatic control is ${autoOn ? "on" : "off"} — tap to toggle (${autoId})`
+      : `Automation unavailable (${autoId})`;
+
+    // +/- follow the target helper only.
+    this._syncStepButtons(refs, room);
+  }
+
+  /** Disable +/- when the helper is unusable or already at its own min/max. */
+  _syncStepButtons(refs, room) {
+    if (!refs) return;
+    const s = this._stateOf(room.target_temp_entity);
+    if (!isAvailable(s)) {
+      refs.plus.disabled = true;
+      refs.minus.disabled = true;
+      return;
+    }
+    const a = s.attributes || {};
+    const min = Number(a.min);
+    const max = Number(a.max);
+    const cur = this._effectiveTarget(room);
+
+    if (!Number.isFinite(cur)) {
+      refs.plus.disabled = true;
+      refs.minus.disabled = true;
+      return;
+    }
+    const step = this._cfg.temperature_step;
+    refs.plus.disabled = Number.isFinite(max) && tidy(cur + step) > max;
+    refs.minus.disabled = Number.isFinite(min) && tidy(cur - step) < min;
+
+    const deg = this._degree(room);
+    const name = this._roomName(room);
+    refs.plus.setAttribute("aria-label", `${name}: raise target by ${this._num(step)}${deg}`);
+    refs.minus.setAttribute("aria-label", `${name}: lower target by ${this._num(step)}${deg}`);
+  }
+
+  /* ----------------------------------------------------------------- style */
+
+  static get styles() {
+    return `
+      :host { display: block; }
+
+      ha-card {
+        container-type: inline-size;
+        container-name: acc;
+        overflow: hidden;
+        height: 100%;
+        box-sizing: border-box;
+      }
+
+      .surface {
+        padding: 14px 16px;
+        box-sizing: border-box;
+        height: 100%;
+        cursor: pointer;
+        outline: none;
+      }
+      .surface:focus-visible {
+        box-shadow: inset 0 0 0 2px var(--primary-color, #03a9f4);
+        border-radius: var(--ha-card-border-radius, 12px);
+      }
+
+      .notice {
+        margin: 0 0 8px;
+        padding: 5px 9px;
+        border-radius: 8px;
+        font-size: 12px;
+        line-height: 1.3;
+        color: var(--warning-color, #ffa726);
+        background: rgba(255, 167, 38, 0.14);
+      }
+
+      section { min-width: 0; }
+      [hidden] { display: none !important; }
+
+      /* ============================================================== rooms */
+      .rooms { display: flex; flex-direction: column; }
+
+      /* First row sits against the top padding -- nothing above it. */
+      .roomrow:first-child { padding-top: 2px; }
+      .roomrow:last-child { padding-bottom: 2px; }
+
+      .roomrow {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        /* Top-align so the icon relates to the name / temperature group rather
+           than being centred against the whole row height. Controls opt back
+           into centring. */
+        align-items: start;
+        gap: 12px;
+        padding: 11px 0;
+      }
+      .roomrow + .roomrow {
+        border-top: 1px solid var(--divider-color, rgba(128,128,128,0.25));
+      }
+      .roomrow > .controls { align-self: center; }
+      .roomrow.unavailable .roomtext { opacity: 0.55; }
+
+      .roomtext {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: auto auto;
+        align-items: baseline;
+        column-gap: 10px;
+        row-gap: 1px;
+      }
+      .name { grid-column: 1 / -1; }
+      .status { grid-column: 1 / -1; margin-top: 2px; }
+
+      .big {
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 1.05;
+        color: var(--primary-text-color, #e1e1e1);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.01em;
+      }
+      .unit {
+        font-size: 15px;
+        font-weight: 500;
+        font-style: normal;
+        color: var(--secondary-text-color, #8a8a8a);
+        margin-left: 2px;
+      }
+      .big.cur { margin-top: 1px; }
+
+      .name {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--secondary-text-color, #8a8a8a);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .targetline {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--secondary-text-color, #8a8a8a);
+        font-variant-numeric: tabular-nums;
+      }
+      /* Keep "Target 20.0°" whole -- it may wrap away from the badge, but it
+         must never break into "Target" / "20.0°". */
+      .target { white-space: nowrap; }
+      /* v1 coloured the destination temperature by season. */
+      .target.cool { color: var(--acc-target-cool, #23aa08); }
+      .target.heat { color: var(--acc-target-heat, #fc0000); }
+
+      .delta {
+        font-size: 12px;
+        font-weight: 700;
+        padding: 1px 7px;
+        border-radius: 999px;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .delta.above { color: var(--acc-above, #29b6f6); background: rgba(41,182,246,0.15); }
+      .delta.below { color: var(--acc-below, #ffa726); background: rgba(255,167,38,0.16); }
+      .delta.even  { color: var(--secondary-text-color, #8a8a8a); background: rgba(128,128,128,0.16); }
+
+      .status {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--disabled-text-color, #6f6f6f);
+        transition: color 0.3s ease;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .statussub { opacity: 0.75; font-weight: 600; }
+
+      /* ================================================= left status column */
+      /* Fan above, boost read-out below. The column is narrower than the text
+         block is tall, so the badge never adds to the row height. */
+      .statuscol {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        margin-top: 2px;
+        min-width: 0;
+      }
+
+      /* The boost control mirrors the fan square above it exactly: same box,
+         same radius, same icon size. Icon only -- no label. */
+      .ctl.boost {
+        width: 38px;
+        height: 38px;
+        min-width: 38px;
+        min-height: 38px;
+        padding: 0;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+      }
+      .ctl.boost ha-icon { --mdc-icon-size: 22px; width: 22px; height: 22px; }
+      .ctl.boost.on {
+        color: var(--acc-boost, #ffa31a);
+        background: rgba(255, 163, 26, 0.18);
+      }
+
+      /* ========================================================== mode icon */
+      .modeicon {
+        position: relative;
+        flex: 0 0 auto;
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        border-radius: 12px;
+        color: var(--disabled-text-color, #6f6f6f);
+        transition: color 0.3s ease;
+      }
+      .modeicon::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: currentColor;
+        opacity: 0.14;
+        transition: opacity 0.3s ease;
+      }
+      .modeicon ha-icon {
+        position: relative;
+        display: block;
+        --mdc-icon-size: 22px;
+        width: 22px;
+        height: 22px;
+        line-height: 0;
+        /* Pinned, not inherited: Home Assistant's own <ha-icon> can size its
+           box differently from the glyph, and anything other than dead centre
+           makes the spin wobble instead of turn. */
+        transform-origin: 50% 50%;
+      }
+
+      /* One palette drives the icon, the status word and the power button. */
+      .m-cool { color: var(--acc-cool, #0586f7); }
+      .m-heat { color: var(--acc-heat, #fc0000); }
+      .m-dry  { color: var(--acc-dry,  #26c6da); }
+      .m-fan  { color: var(--acc-fan,  #66bb6a); }
+      .m-auto { color: var(--acc-auto, #ab47bc); }
+      .m-off, .m-na { color: var(--disabled-text-color, #6f6f6f); }
+
+      .modeicon.running::after {
+        content: "";
+        position: absolute;
+        inset: -7px;
+        border-radius: 18px;
+        background: radial-gradient(closest-side, currentColor, transparent 72%);
+        opacity: 0.3;
+        pointer-events: none;
+        animation: acc-glow 2.8s ease-in-out infinite;
+      }
+      @keyframes acc-glow {
+        0%, 100% { opacity: 0.18; transform: scale(0.95); }
+        50%      { opacity: 0.4;  transform: scale(1.06); }
+      }
+      @keyframes acc-spin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
+      }
+
+      /* =========================================================== controls */
+      .controls {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(44px, auto);
+        gap: 7px;
+        justify-content: end;
+      }
+
+      .ctl {
+        -webkit-tap-highlight-color: transparent;
+        appearance: none;
+        border: none;
+        margin: 0;
+        min-width: 44px;
+        min-height: 40px;
+        padding: 0 10px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: var(--primary-text-color, #e1e1e1);
+        background: rgba(128, 128, 128, 0.16);
+        transition: transform 0.12s ease, background-color 0.2s ease, color 0.2s ease;
+      }
+      .ctl ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
+      .ctl:hover:not(:disabled) { background: rgba(128, 128, 128, 0.26); }
+      .ctl:active:not(:disabled) { transform: scale(0.93); }
+      .ctl:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
+      .ctl:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+      /* Powered on: the button adopts the room's own mode colour. */
+      .ctl.power.on { color: currentColor; background: rgba(128, 128, 128, 0.16); }
+      .ctl.power.on.m-cool { color: var(--acc-cool, #0586f7); background: rgba(5, 134, 247, 0.18); }
+      .ctl.power.on.m-heat { color: var(--acc-heat, #fc0000); background: rgba(252, 0, 0, 0.18); }
+      .ctl.power.on.m-dry  { color: var(--acc-dry,  #26c6da); background: rgba(38, 198, 218, 0.18); }
+      .ctl.power.on.m-fan  { color: var(--acc-fan,  #66bb6a); background: rgba(102, 187, 106, 0.18); }
+      .ctl.power.on.m-auto { color: var(--acc-auto, #ab47bc); background: rgba(171, 71, 188, 0.18); }
+
+      .ctl.auto.on  { color: var(--acc-auto-on, #1db954); background: rgba(29, 185, 84, 0.18); }
+      .ctl.auto.off { color: var(--acc-auto-off, #e05252); background: rgba(224, 82, 82, 0.15); }
+
+      /* ========================================================= responsive */
+      @container acc (max-width: 430px) {
+        .surface { padding: 12px 12px; }
+        .roomrow {
+          grid-template-columns: auto minmax(0, 1fr);
+          row-gap: 9px;
+          column-gap: 10px;
+        }
+        .controls {
+          grid-column: 1 / -1;
+          grid-auto-columns: minmax(44px, 1fr);
+          justify-content: stretch;
+        }
+        .big.cur { font-size: 22px; }
+      }
+
+      @container acc (max-width: 280px) {
+        .surface { padding: 10px; }
+        .roomrow { column-gap: 8px; gap: 8px; }
+        .modeicon { width: 32px; height: 32px; border-radius: 10px; }
+        .modeicon ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; }
+        .roomtext { grid-template-columns: minmax(0, 1fr); }
+        .big.cur { font-size: 20px; }
+        .targetline { font-size: 13px; }
+        .controls { gap: 5px; grid-auto-columns: minmax(38px, 1fr); }
+        .ctl { min-width: 38px; min-height: 38px; padding: 0 6px; font-size: 11px; }
+        .ctl ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; }
+        /* Boost keeps matching the fan square at every width. */
+        .ctl.boost {
+          width: 32px; height: 32px;
+          min-width: 32px; min-height: 32px;
+          border-radius: 10px; padding: 0;
+        }
+        .ctl.boost ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; }
+      }
+
+      /* Safety net for engines without container queries. */
+      @supports not (container-type: inline-size) {
+        @media (max-width: 500px) {
+          .roomrow { grid-template-columns: auto minmax(0, 1fr); row-gap: 9px; }
+          .controls {
+            grid-column: 1 / -1;
+            grid-auto-columns: minmax(44px, 1fr);
+            justify-content: stretch;
+          }
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .modeicon.running::after { animation: none; opacity: 0.32; }
+        .modeicon ha-icon { animation: none !important; }
+        .fill, .ctl, .modeicon, .status { transition: none; }
+        .ctl:active { transform: none; }
+      }
+    `;
   }
 }
 
-customElements.define("ac-control-card", AcControlCard);
-customElements.define("ac-control-card-editor", AcControlCardEditor);
+/* ------------------------------------------------------------------ editor */
+
+const GLOBAL_SCHEMA = [
+  {
+    name: "temperature_step",
+    selector: { number: { min: 0.1, max: 5, step: 0.1, mode: "box" } },
+  },
+  { name: "show_name", selector: { boolean: {} } },
+  { name: "show_boost", selector: { boolean: {} } },
+];
+
+const ROOM_SCHEMA = [
+  { name: "room_name", selector: { text: {} } },
+  { name: "climate_entity", required: true, selector: { entity: { domain: ["climate"] } } },
+  { name: "room_temp_entity", required: true, selector: { entity: { domain: ["sensor"] } } },
+  {
+    name: "target_temp_entity",
+    required: true,
+    selector: { entity: { domain: ["input_number"] } },
+  },
+  {
+    name: "season_entity",
+    selector: { entity: { domain: ["input_boolean", "binary_sensor"] } },
+  },
+  { name: "automation_cool_entity", selector: { entity: { domain: ["automation"] } } },
+  { name: "automation_heat_entity", selector: { entity: { domain: ["automation"] } } },
+  { name: "icon", selector: { icon: {} } },
+];
+
+const LABELS = {
+  temperature_step: "Step (°)",
+  show_name: "Show room names",
+  show_boost: "Show boost button",
+  room_name: "Room name",
+  climate_entity: "AC (climate) entity",
+  room_temp_entity: "Room temperature",
+  target_temp_entity: "Target temperature",
+  season_entity: "Heat/Cool selector (on = heat)",
+  automation_cool_entity: "Automation — cool (optional)",
+  automation_heat_entity: "Automation — heat (optional)",
+  icon: "Icon override (optional)",
+};
+
+class AcControlCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = {};
+    this._rooms = [];
+    this._open = 0;
+    this._built = false;
+  }
+
+  setConfig(config) {
+    const rooms = AcControlCard.normaliseRooms(config || {});
+    // HA may set `hass` before `setConfig`, in which case an empty shell has
+    // already been built -- that must be rebuilt. Once the list is up, only a
+    // change in room count needs a rebuild; anything else syncs in place so
+    // typing in a field does not lose focus on every keystroke.
+    const rebuild = !this._built || rooms.length !== this._rooms.length;
+    this._config = { ...config };
+    this._rooms = rooms;
+    this._render(rebuild);
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    this._render(first && !this._built);
+  }
+
+  /* Always emit the `rooms:` form so the shape is predictable once edited. */
+  _emit() {
+    const out = { type: `custom:${CARD_TYPE}` };
+    for (const k of GLOBAL_KEYS) {
+      if (this._config[k] !== undefined && this._config[k] !== "") out[k] = this._config[k];
+    }
+    if (this._config.tap_action) out.tap_action = this._config.tap_action;
+    out.rooms = this._rooms.map((r) => {
+      const o = {};
+      for (const k of ROOM_KEYS) if (r[k] !== undefined && r[k] !== "") o[k] = r[k];
+      return o;
+    });
+    this._config = { ...out };
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: out },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    this._render(true);
+  }
+
+  _label(s) {
+    return LABELS[s.name] || (s.name ? s.name.replace(/_/g, " ") : "");
+  }
+
+  _render(force) {
+    if (!this._hass) return;
+    if (!customElements.get("ha-form")) {
+      this.textContent = "Edit this card in YAML — ha-form is unavailable.";
+      return;
+    }
+    if (this._built && !force) {
+      this._syncForms();
+      return;
+    }
+    this.innerHTML = "";
+    this._built = true;
+
+    const style = document.createElement("style");
+    style.textContent = `
+      .acc-ed { display: flex; flex-direction: column; gap: 14px; }
+      .acc-sec-title {
+        font-size: 12px; font-weight: 700; letter-spacing: .06em;
+        text-transform: uppercase; color: var(--secondary-text-color);
+        margin: 4px 0 -4px;
+      }
+      .acc-room {
+        border: 1px solid var(--divider-color); border-radius: 10px;
+        overflow: hidden; background: var(--secondary-background-color, transparent);
+      }
+      .acc-room-head {
+        display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px;
+      }
+      .acc-room-title { flex: 1; min-width: 0; }
+      .acc-room-title b { display: block; font-size: 14px; }
+      .acc-room-title span {
+        display: block; font-size: 12px; color: var(--secondary-text-color);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .acc-room-body { padding: 0 12px 12px; }
+      .acc-ico {
+        appearance: none; border: none; background: transparent; cursor: pointer;
+        color: var(--secondary-text-color); border-radius: 8px;
+        width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto;
+      }
+      .acc-ico:hover { background: rgba(128,128,128,.18); color: var(--primary-text-color); }
+      .acc-ico:disabled { opacity: .3; cursor: not-allowed; }
+      .acc-ico.danger:hover { color: var(--error-color, #e05252); }
+      .acc-add {
+        appearance: none; cursor: pointer; font: inherit; font-size: 14px;
+        padding: 9px 14px; border-radius: 10px; align-self: flex-start;
+        border: 1px dashed var(--divider-color); background: transparent;
+        color: var(--primary-color); display: flex; align-items: center; gap: 6px;
+      }
+      .acc-add:hover { background: rgba(128,128,128,.12); }
+    `;
+    this.appendChild(style);
+
+    const wrap = document.createElement("div");
+    wrap.className = "acc-ed";
+
+    // ---- global options
+    const gTitle = document.createElement("div");
+    gTitle.className = "acc-sec-title";
+    gTitle.textContent = "Card";
+    wrap.appendChild(gTitle);
+
+    const gForm = document.createElement("ha-form");
+    gForm.hass = this._hass;
+    gForm.schema = GLOBAL_SCHEMA;
+    gForm.computeLabel = (s) => this._label(s);
+    gForm.data = { ...DEFAULTS, ...this._config };
+    gForm.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      this._config = { ...this._config, ...ev.detail.value };
+      this._emit();
+    });
+    wrap.appendChild(gForm);
+    this._gForm = gForm;
+
+    // ---- rooms
+    const rTitle = document.createElement("div");
+    rTitle.className = "acc-sec-title";
+    rTitle.textContent = `Rooms (${this._rooms.length})`;
+    wrap.appendChild(rTitle);
+
+    this._roomForms = [];
+    this._roomHeads = [];
+    this._rooms.forEach((room, i) => {
+      wrap.appendChild(this._buildRoomEditor(room, i));
+    });
+
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "acc-add";
+    const plusIcon = document.createElement("ha-icon");
+    plusIcon.setAttribute("icon", "mdi:plus");
+    add.append(plusIcon, document.createTextNode("Add room"));
+    add.addEventListener("click", () => {
+      this._rooms = [
+        ...this._rooms,
+        { room_name: "", climate_entity: "", room_temp_entity: "", target_temp_entity: "" },
+      ];
+      this._open = this._rooms.length - 1;
+      this._emit();
+    });
+    wrap.appendChild(add);
+
+    this.appendChild(wrap);
+  }
+
+  _buildRoomEditor(room, i) {
+    const box = document.createElement("div");
+    box.className = "acc-room";
+    box.dataset.roomIndex = String(i);
+
+    const head = document.createElement("div");
+    head.className = "acc-room-head";
+
+    const title = document.createElement("div");
+    title.className = "acc-room-title";
+    const b = document.createElement("b");
+    b.textContent = room.room_name || room.name || `Room ${i + 1}`;
+    const sub = document.createElement("span");
+    sub.textContent = room.climate_entity || "not configured";
+    title.append(b, sub);
+    this._roomHeads[i] = { name: b, sub };
+
+    const mkIco = (ic, label, cls) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `acc-ico${cls ? " " + cls : ""}`;
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+      const ie = document.createElement("ha-icon");
+      ie.setAttribute("icon", ic);
+      btn.appendChild(ie);
+      return btn;
+    };
+
+    const up = mkIco("mdi:arrow-up", "Move up");
+    up.disabled = i === 0;
+    up.addEventListener("click", () => this._move(i, -1));
+
+    const down = mkIco("mdi:arrow-down", "Move down");
+    down.disabled = i === this._rooms.length - 1;
+    down.addEventListener("click", () => this._move(i, +1));
+
+    const isOpen = this._open === i;
+    const edit = mkIco(
+      isOpen ? "mdi:chevron-up" : "mdi:pencil",
+      isOpen ? "Collapse" : "Edit room",
+    );
+    edit.addEventListener("click", () => {
+      this._open = isOpen ? -1 : i;
+      this._render(true);
+    });
+
+    const del = mkIco("mdi:close", "Remove room", "danger");
+    del.disabled = this._rooms.length <= 1;
+    del.addEventListener("click", () => {
+      this._rooms = this._rooms.filter((_, j) => j !== i);
+      if (this._open >= this._rooms.length) this._open = this._rooms.length - 1;
+      this._emit();
+    });
+
+    head.append(title, up, down, edit, del);
+    box.appendChild(head);
+
+    if (isOpen) {
+      const body = document.createElement("div");
+      body.className = "acc-room-body";
+      const form = document.createElement("ha-form");
+      form.hass = this._hass;
+      form.schema = ROOM_SCHEMA;
+      form.computeLabel = (s) => this._label(s);
+      form.data = { ...room };
+      form.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._rooms = this._rooms.map((r, j) => (j === i ? { ...r, ...ev.detail.value } : r));
+        this._emit();
+      });
+      body.appendChild(form);
+      box.appendChild(body);
+      this._roomForms[i] = form;
+    }
+
+    return box;
+  }
+
+  _move(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= this._rooms.length) return;
+    const next = [...this._rooms];
+    [next[i], next[j]] = [next[j], next[i]];
+    this._rooms = next;
+    if (this._open === i) this._open = j;
+    else if (this._open === j) this._open = i;
+    this._emit();
+  }
+
+  _syncForms() {
+    if (this._gForm) {
+      this._gForm.hass = this._hass;
+      this._gForm.data = { ...DEFAULTS, ...this._config };
+    }
+    (this._roomForms || []).forEach((form, i) => {
+      if (!form) return;
+      form.hass = this._hass;
+      form.data = { ...this._rooms[i] };
+    });
+    (this._roomHeads || []).forEach((h, i) => {
+      if (!h) return;
+      const r = this._rooms[i] || {};
+      h.name.textContent = r.room_name || r.name || `Room ${i + 1}`;
+      h.sub.textContent = r.climate_entity || "not configured";
+    });
+  }
+}
+
+/* ---------------------------------------------------------------- register */
+
+if (!customElements.get(CARD_TYPE)) customElements.define(CARD_TYPE, AcControlCard);
+if (!customElements.get(`${CARD_TYPE}-editor`)) {
+  customElements.define(`${CARD_TYPE}-editor`, AcControlCardEditor);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "ac-control-card",
-  name: "AC Control Card",
-  description: "Midea AC tile: room temp, target temp, fan animation, boost, and a heat/cool-aware automation toggle.",
-});
+if (!window.customCards.some((c) => c.type === CARD_TYPE)) {
+  window.customCards.push({
+    type: CARD_TYPE,
+    name: "AC Control Card",
+    description:
+      "One card for several air conditioners: temperature, target, difference badge, " +
+      "mode status, a fan that spins with the unit, and touch controls.",
+    preview: true,
+    documentationURL: "https://github.com/ilirdokle43/HA-AC-Control",
+  });
+}
+
+console.info(
+  `%c ${CARD_TYPE.toUpperCase()} %c v${CARD_VERSION} `,
+  "color:#0b1520;background:#29b6f6;font-weight:700;border-radius:3px 0 0 3px",
+  "color:#29b6f6;background:#0b1520;font-weight:700;border-radius:0 3px 3px 0",
+);
+
+export { AcControlCard, AcControlCardEditor, CARD_VERSION };

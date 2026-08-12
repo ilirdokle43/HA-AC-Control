@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ac-control-card — preview</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 22px;
+    background: #0f1216; color: #e1e1e1;
+    font-family: Roboto, "Segoe UI", system-ui, sans-serif;
+    --divider-color: rgba(255,255,255,.10);
+    --primary-text-color: #e6e6e6;
+    --secondary-text-color: #9aa0a6;
+    --disabled-text-color: #6f6f6f;
+    --card-background-color: #1b1f26;
+    --ha-card-border-radius: 14px;
+    --primary-color: #03a9f4;
+    --warning-color: #ffa726;
+  }
+  body.light {
+    color-scheme: light;
+    background: #f2f4f7; color: #212121;
+    --divider-color: rgba(0,0,0,.10);
+    --primary-text-color: #212121;
+    --secondary-text-color: #6b7280;
+    --disabled-text-color: #9aa0a6;
+    --card-background-color: #ffffff;
+  }
+  h2 {
+    font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--secondary-text-color); margin: 26px 0 10px;
+  }
+  .row { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+  .slot { flex: 0 0 auto; }
+  .w520 { width: 520px; } .w380 { width: 380px; } .w300 { width: 300px; } .w240 { width: 240px; }
+  .bar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding-bottom: 14px; border-bottom: 1px solid var(--divider-color);
+  }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--divider-color); background: transparent; color: inherit;
+  }
+  button:hover { background: rgba(128,128,128,.16); }
+  .log {
+    margin-top: 22px; padding-top: 10px; border-top: 1px solid var(--divider-color);
+    font-family: Consolas, monospace; font-size: 12px; color: #7fd67f; white-space: pre-wrap;
+    max-height: 190px; overflow: auto;
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <strong style="font-size:14px">ac-control-card preview</strong>
+    <button id="theme">Toggle light / dark</button>
+    <button id="cool">Turn everything on (cool)</button>
+    <button id="boost">Boost the first room</button>
+    <button id="reset">Reset</button>
+  </div>
+
+  <h2>Three rooms — desktop, 520px</h2>
+  <div class="row"><div class="slot w520" id="a"></div></div>
+
+  <h2>Same card at phone widths — 380 / 300 / 240px</h2>
+  <div class="row">
+    <div class="slot w380" id="b"></div>
+    <div class="slot w300" id="c"></div>
+    <div class="slot w240" id="d"></div>
+  </div>
+
+  <h2>Single room (v1 flat config)</h2>
+  <div class="row"><div class="slot w520" id="e"></div></div>
+
+  <h2>Edge cases — unavailable room · at target · not configured</h2>
+  <div class="row">
+    <div class="slot w520" id="f"></div>
+    <div class="slot w380" id="g"></div>
+  </div>
+
+  <div class="log" id="log"></div>
+
+<script type="module">
+  import { installStubs, makeHass, demoStates, climate, sensor, number, toggle, DEMO_CONFIG }
+    from "./ha-stubs.js";
+  import "../ac-control-card.js";
+
+  installStubs();
+
+  const logEl = document.getElementById("log");
+  const log = (m) => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+
+  const cards = [];
+  function mount(slot, config, hass) {
+    const card = document.createElement("ac-control-card");
+    card.setConfig(config);
+    card.hass = hass;
+    document.getElementById(slot).appendChild(card);
+    hass.onChange = () => cards.forEach((c) => { if (c.hass === hass) c.hass = hass; });
+    cards.push(card);
+    return card;
+  }
+
+  /* One shared house drives the first four cards, so a tap on any of them
+     updates all of the widths at once. */
+  const house = makeHass(demoStates());
+  const origCall = house.callService;
+  house.callService = (d, s, data, target) => {
+    log(`${d}.${s}  ${JSON.stringify(target && target.entity_id || data)}`);
+    origCall(d, s, data, target);
+  };
+
+  mount("a", DEMO_CONFIG, house);
+  mount("b", DEMO_CONFIG, house);
+  mount("c", DEMO_CONFIG, house);
+  mount("d", DEMO_CONFIG, house);
+
+  /* v1 flat config, still supported verbatim. */
+  mount("e", {
+    type: "custom:ac-control-card",
+    name: "Studio",
+    climate_entity: "climate.demo_bedroom_ac",
+    room_temp_entity: "sensor.demo_bedroom_temperature",
+    target_temp_entity: "input_number.demo_bedroom_target",
+    season_entity: "input_boolean.demo_heating_season",
+  }, house);
+
+  /* Edge cases get their own state so they cannot disturb the demo house. */
+  const broken = demoStates();
+  broken["climate.demo_bedroom_ac"] = climate("unavailable");
+  broken["sensor.demo_bedroom_temperature"] = sensor("unavailable");
+  broken["input_number.demo_bedroom_target"] = { state: "unavailable", attributes: {} };
+  broken["climate.demo_office_ac"] = climate("heat", { fan_mode: "low", hvac_action: "heating", temperature: 24 });
+  broken["sensor.demo_office_temperature"] = sensor(20);
+  broken["input_number.demo_office_target"] = number(20);
+  broken["automation.demo_office_ac_command"] = toggle("on");
+  broken["climate.demo_living_room_ac"] = climate("dry", { fan_mode: "auto" });
+  mount("f", DEMO_CONFIG, makeHass(broken));
+
+  mount("g", {
+    type: "custom:ac-control-card",
+    rooms: [{ room_name: "New room" }],
+  }, makeHass(demoStates()));
+
+  /* ---- demo controls */
+  document.getElementById("theme").addEventListener("click", () => {
+    document.body.classList.toggle("light");
+  });
+
+  document.getElementById("cool").addEventListener("click", () => {
+    for (const [id, s] of Object.entries(house.states)) {
+      if (id.startsWith("climate.")) {
+        house.states[id] = { ...s, state: "cool", attributes: { ...s.attributes, hvac_action: "cooling" } };
+      }
+      if (id.startsWith("automation.")) house.states[id] = { ...s, state: "on" };
+    }
+    house.onChange();
+    log("all units -> cool, automations -> on");
+  });
+
+  document.getElementById("boost").addEventListener("click", () => {
+    const id = "climate.demo_bedroom_ac";
+    const cur = house.states[id];
+    const on = cur.attributes.preset_mode === "boost";
+    house.states[id] = {
+      ...cur,
+      state: on ? cur.state : "cool",
+      attributes: { ...cur.attributes, preset_mode: on ? "none" : "boost", hvac_action: "cooling" },
+    };
+    house.onChange();
+    log(`bedroom boost -> ${on ? "off" : "on"} (the other rooms must not change)`);
+  });
+
+  document.getElementById("reset").addEventListener("click", () => {
+    Object.assign(house.states, demoStates());
+    house.onChange();
+    log("reset");
+  });
+
+  log("preview ready — every entity id here is a demo id");
+</script>
+</body>
+</html>

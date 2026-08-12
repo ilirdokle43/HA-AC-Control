@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ac-control-card — tests</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px;
+    background: #0f1216; color: #e1e1e1;
+    font-family: Roboto, "Segoe UI", system-ui, sans-serif;
+    --divider-color: rgba(255,255,255,.10);
+    --primary-text-color: #e1e1e1;
+    --secondary-text-color: #9aa0a6;
+    --disabled-text-color: #6f6f6f;
+    --card-background-color: #1b1f26;
+    --ha-card-border-radius: 14px;
+    --primary-color: #03a9f4;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 18px; }
+  #summary {
+    position: sticky; top: 0; z-index: 5;
+    padding: 12px 14px; border-radius: 12px; margin-bottom: 16px;
+    font-weight: 700; font-size: 15px;
+    background: #1b1f26; border: 1px solid var(--divider-color);
+  }
+  #summary.ok   { color: #4ade80; border-color: rgba(74,222,128,.45); }
+  #summary.bad  { color: #f87171; border-color: rgba(248,113,113,.45); }
+  #results { font-size: 13px; line-height: 1.55; }
+  .suite { margin: 14px 0 4px; font-weight: 700; color: #9aa0a6;
+           text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .t { padding-left: 14px; }
+  .t.pass::before { content: "PASS "; color: #4ade80; font-weight: 700; }
+  .t.fail::before { content: "FAIL "; color: #f87171; font-weight: 700; }
+  .t.fail { color: #f87171; }
+  .why { padding-left: 60px; color: #fca5a5; font-family: Consolas, monospace; font-size: 12px; }
+  /* The suite mounts real cards; keep them out of the way but laid out. */
+  #stage { opacity: .28; margin-top: 28px; pointer-events: none; }
+  #stage::before {
+    content: "mounted fixtures"; display: block; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .06em; color: #6f6f6f; margin-bottom: 8px;
+  }
+</style>
+</head>
+<body>
+  <h1>ac-control-card — test suite</h1>
+  <div class="sub">No framework, no dependencies. Serve this folder and open the page.</div>
+  <div id="summary">running…</div>
+  <div id="results"></div>
+  <div id="stage"></div>
+
+<script type="module">
+  import { run } from "./card.test.js";
+
+  const results = document.getElementById("results");
+  const summary = document.getElementById("summary");
+
+  const add = (cls, text) => {
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = text;
+    results.appendChild(d);
+    return d;
+  };
+
+  const report = {
+    suite: (n) => add("suite", n),
+    pass: (n) => add("t pass", n),
+    fail: (n, why) => {
+      add("t fail", n);
+      add("why", why);
+    },
+    done: (pass, failed) => {
+      summary.textContent = failed
+        ? `${failed} failing, ${pass} passing`
+        : `all ${pass} tests passing`;
+      summary.className = failed ? "bad" : "ok";
+      window.__TEST_RESULT__ = { pass, failed };
+    },
+  };
+
+  run(report).catch((e) => {
+    summary.textContent = `suite crashed: ${e.message}`;
+    summary.className = "bad";
+    window.__TEST_RESULT__ = { pass: 0, failed: -1, error: e.message };
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ac-control-card — screenshot fixture</title>
+<!--
+  The fixture the README screenshot is generated from. Renders one card at a
+  fixed width against a Home Assistant-like dark background, using only demo
+  entity ids. Capture it with, from the repository root:
+
+    python -m http.server 8783
+    chrome --headless=new --disable-gpu --window-size=560,363 \
+           --screenshot=screenshot.png http://localhost:8783/tests/shot.html
+
+  Append ?w=<px> to render at a phone width, e.g. ?w=380.
+-->
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; }
+  body {
+    width: 560px;
+    padding: 20px;
+    box-sizing: border-box;
+    background: #111418;
+    font-family: Roboto, "Segoe UI", system-ui, sans-serif;
+    --divider-color: rgba(255,255,255,.10);
+    --primary-text-color: #e6e6e6;
+    --secondary-text-color: #9aa0a6;
+    --disabled-text-color: #6f6f6f;
+    --card-background-color: #1b1f26;
+    --ha-card-border-radius: 14px;
+    --primary-color: #03a9f4;
+  }
+</style>
+</head>
+<body>
+  <div id="slot"></div>
+<script type="module">
+  import { installStubs, makeHass, demoStates, climate, sensor, toggle, DEMO_CONFIG }
+    from "./ha-stubs.js";
+  import "../ac-control-card.js";
+
+  installStubs();
+
+  // A deliberately varied snapshot: one unit cooling in boost, one heating,
+  // one off. All ids are demo ids.
+  const s = demoStates();
+  s["climate.demo_bedroom_ac"] = climate("cool", {
+    fan_mode: "high", hvac_action: "cooling", preset_mode: "boost", temperature: 17,
+  });
+  s["automation.demo_bedroom_ac_command"] = toggle("on");
+
+  s["climate.demo_office_ac"] = climate("heat", {
+    fan_mode: "low", hvac_action: "heating", temperature: 24,
+  });
+  s["sensor.demo_office_temperature"] = sensor(19.8);
+  s["automation.demo_office_ac_command"] = toggle("on");
+
+  const w = Number(new URLSearchParams(location.search).get("w"));
+  if (Number.isFinite(w) && w > 0) document.body.style.width = `${w}px`;
+
+  const card = document.createElement("ac-control-card");
+  card.setConfig(DEMO_CONFIG);
+  card.hass = makeHass(s);
+  document.getElementById("slot").appendChild(card);
+</script>
+</body>
+</html>
