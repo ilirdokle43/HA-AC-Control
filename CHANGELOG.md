@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.1.0
+
+### Added
+
+- **Compact layout** — `layout: compact` (or `compact: true`) renders the card as a
+  small dashboard tile: the fan, the room temperature, the room name and the AC's
+  target, and nothing else. Tapping it opens that unit's full Home Assistant
+  controls, so nothing is lost by shrinking it. The tile asks for a quarter of a
+  section so four sit in a row on a desktop, and can be dragged down to two columns
+  in the dashboard's own layout editor — the card does not fix the column count
+  itself. The fan keeps its meaning across both layouts: it uses the same `m-*`
+  palette and the same `_fanSpin()`, so it is muted when the unit is off, blue while
+  cooling, and turns at the unit's real fan speed.
+- `--acc-compact-current`, `--acc-compact-target` and `--acc-compact-radius` for
+  theming the tile.
+- A **Layout** dropdown in the GUI editor, so compact mode needs no hand-written
+  YAML.
+
+### Fixed
+
+- **The GUI editor no longer loses focus after every character.** Typing a room
+  name emits a config change on each keystroke, and `_emit()` forced a full
+  rebuild of the editor — which replaced the input being typed in, so the caret
+  jumped out and the field had to be clicked again. Field edits now refresh the
+  existing forms in place (`_syncForms()` already updated both the values and the
+  room titles); only structural changes — adding, removing or reordering a room —
+  still rebuild.
+
+The full layout is untouched: with no `layout` set, the card renders exactly as it
+did in 2.0.1.
+
 ## 2.0.1
 
 ### Fixed

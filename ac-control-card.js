@@ -28,7 +28,7 @@
  */
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2.0.1";
+const CARD_VERSION = "2.1.0";
 
 /* ------------------------------------------------------------------ config */
 
@@ -36,7 +36,11 @@ const DEFAULTS = Object.freeze({
   temperature_step: 0.5,
   show_name: true,
   show_boost: true,
+  layout: "full",
 });
+
+/** Card layouts. `compact` is the small dashboard tile; `full` is the v1/v2 card. */
+const LAYOUTS = Object.freeze(["full", "compact"]);
 
 /** Per-room options. These may sit at the top level (single room) or in `rooms[]`. */
 const ROOM_KEYS = [
@@ -55,7 +59,7 @@ const ROOM_KEYS = [
 const ROOM_ENTITY_KEYS = ROOM_KEYS.filter((k) => k.endsWith("_entity"));
 
 /** Options that apply to the whole card. */
-const GLOBAL_KEYS = ["temperature_step", "show_name", "show_boost"];
+const GLOBAL_KEYS = ["temperature_step", "show_name", "show_boost", "layout"];
 
 /** Without these a room cannot render anything meaningful. */
 const REQUIRED_ROOM_KEYS = ["climate_entity", "room_temp_entity", "target_temp_entity"];
@@ -220,10 +224,19 @@ class AcControlCard extends HTMLElement {
       throw new Error(`${CARD_TYPE}: temperature_step must be a positive number.`);
     }
 
+    if (config.layout !== undefined && !LAYOUTS.includes(config.layout)) {
+      throw new Error(
+        `${CARD_TYPE}: layout must be one of ${LAYOUTS.join(", ")}, got ` +
+          `${JSON.stringify(config.layout)}.`,
+      );
+    }
+
     this._cfg = {
       ...DEFAULTS,
       ...config,
       temperature_step: Number.isFinite(step) && step > 0 ? step : DEFAULTS.temperature_step,
+      // `compact: true` is accepted as a shorthand for `layout: compact`.
+      layout: config.layout || (config.compact ? "compact" : DEFAULTS.layout),
     };
     this._rooms = rooms;
 
@@ -246,6 +259,11 @@ class AcControlCard extends HTMLElement {
     return this._rooms.length > 1;
   }
 
+  /** True when the card renders as the small dashboard tile. */
+  get _compact() {
+    return !!this._cfg && this._cfg.layout === "compact";
+  }
+
   /**
    * Roughly how tall the card renders, in px.
    *
@@ -258,6 +276,9 @@ class AcControlCard extends HTMLElement {
    */
   _estimatedHeightPx() {
     const n = this._rooms.length;
+    // The compact tile has no controls and no status line, so it is one fixed
+    // small height per room whatever the width.
+    if (this._compact) return 12 + 56 * n;
     const w = this.getBoundingClientRect ? this.getBoundingClientRect().width : 0;
     if (w > 431) return 11 + 106 * n; // controls share the room's line
     if (w && w <= 280) return 3 + 140 * n; // compact everything
@@ -277,12 +298,22 @@ class AcControlCard extends HTMLElement {
    * one number overlaps the neighbouring card at some width.
    */
   getGridOptions() {
+    // The compact tile is a quarter of the section wide by default, so four sit
+    // in a row on a desktop section. This is only the starting width -- the
+    // dashboard's own layout editor owns it from there, and min_columns lets it
+    // be dragged down to two per row.
+    if (this._compact) {
+      return { columns: 3, rows: "auto", min_columns: 2, min_rows: 1 };
+    }
     return { columns: 12, rows: "auto", min_columns: 6, min_rows: 2 };
   }
 
   /** Pre-2024.11 name for the same thing, which has to name a row count. */
   getLayoutOptions() {
     const rows = this._gridRowsFor(this._estimatedHeightPx());
+    if (this._compact) {
+      return { grid_columns: 3, grid_rows: rows, grid_min_columns: 2, grid_min_rows: 1 };
+    }
     return { grid_columns: 12, grid_rows: rows, grid_min_columns: 6, grid_min_rows: 2 };
   }
 
@@ -664,9 +695,73 @@ class AcControlCard extends HTMLElement {
     return { text, name, cur, target, delta, status, statusMain, statusSub };
   }
 
-  _build() {
+  /**
+   * The compact tile: fan, current temperature, room name, target. No controls,
+   * no boost, no status line — tapping it opens the full controls instead.
+   *
+   * One tile per configured room, so a single-room card is a single tile and a
+   * multi-room card flows them. The fan reuses the full card's `.modeicon`
+   * classes and `_fanSpin()`, so its colour and its spin mean exactly the same
+   * thing in both layouts.
+   */
+  _buildCompact() {
     const root = this.shadowRoot;
     root.innerHTML = `<style>${AcControlCard.styles}</style>`;
+    // Lets the stylesheet reach the host, which is where the card radius lives.
+    this.setAttribute("data-layout", "compact");
+
+    const card = document.createElement("ha-card");
+    card.className = "compact";
+
+    const surface = el("div", "surface compact");
+    const notice = el("div", "notice");
+    notice.hidden = true;
+    surface.appendChild(notice);
+
+    this._el = { surface, notice, rooms: [] };
+
+    const list = el("div", "ctiles");
+    for (const room of this._rooms) {
+      const tile = el("button", "ctile");
+      tile.type = "button";
+
+      const box = el("div", "modeicon");
+      box.setAttribute("aria-hidden", "true");
+      box.appendChild(icon(FAN_ICON));
+
+      const cur = el("div", "ccur", "—");
+      const name = el("div", "cname");
+      const target = el("div", "ctarget");
+
+      tile.append(box, cur, name, target);
+      tile.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._cardAction(room);
+      });
+
+      list.appendChild(tile);
+      this._el.rooms.push({
+        row: tile,
+        modeIcon: box,
+        modeGlyph: box.firstChild,
+        cur,
+        name,
+        target,
+      });
+    }
+
+    surface.appendChild(list);
+    card.appendChild(surface);
+    root.appendChild(card);
+    this._built = true;
+  }
+
+  _build() {
+    if (this._compact) return this._buildCompact();
+
+    const root = this.shadowRoot;
+    root.innerHTML = `<style>${AcControlCard.styles}</style>`;
+    this.removeAttribute("data-layout");
 
     const card = document.createElement("ha-card");
     const surface = el("div", "surface");
@@ -730,9 +825,54 @@ class AcControlCard extends HTMLElement {
     this._renderNotice();
     this._rooms.forEach((room, i) => {
       const refs = this._el.rooms[i];
+      if (this._compact) {
+        this._renderCompactRoom(refs, room);
+        return;
+      }
       this._renderRoom(refs, room);
       this._renderControls(refs, room);
     });
+  }
+
+  /**
+   * Compact tile contents. Deliberately only the four things the tile shows —
+   * the numbers come from the same entities and the same helpers the full card
+   * uses, so the two layouts can never disagree about a temperature.
+   */
+  _renderCompactRoom(refs, room) {
+    const mode = this._mode(room);
+    const deg = this._degree(room);
+
+    refs.row.classList.toggle("unavailable", !mode.available);
+
+    refs.modeIcon.className = `modeicon m-${mode.key}${this._running(room) ? " running" : ""}`;
+    refs.modeGlyph.setAttribute("icon", this._iconFor(room));
+    refs.modeGlyph.style.animation = this._fanSpin(room);
+
+    const cur = this._roomState(room, "room_temp_entity");
+    const curOk = cur && isNumeric(cur.state);
+    refs.cur.textContent = curOk ? `${this._num(Number(cur.state))}${deg}` : "—";
+
+    const tgt = this._roomState(room, "target_temp_entity");
+    const tgtOk = !!(tgt && isNumeric(tgt.state));
+    refs.target.textContent = tgtOk ? `${this._num(Number(tgt.state), 0)}${deg}` : "—";
+
+    const name = this._roomName(room);
+    if (this._cfg.show_name === false) {
+      refs.name.hidden = true;
+      refs.name.textContent = "";
+    } else {
+      refs.name.hidden = false;
+      refs.name.textContent = name;
+    }
+
+    refs.row.setAttribute(
+      "aria-label",
+      `${name}. ${mode.label}. ` +
+        `Current ${curOk ? this._num(Number(cur.state)) + deg : "unavailable"}, ` +
+        `target ${tgtOk ? this._num(Number(tgt.state), 0) + deg : "unavailable"}. ` +
+        "Opens the full controls.",
+    );
   }
 
   /**
@@ -1170,6 +1310,101 @@ class AcControlCard extends HTMLElement {
         to   { transform: rotate(360deg); }
       }
 
+      /* ======================================================= compact tile */
+      /* The small dashboard tile. It reuses .modeicon and the m-* palette
+         above -- so an off unit is muted and a cooling one is blue, exactly as
+         in the full card -- and only drops the tinted square, because the tile
+         shows the fan on its own. */
+      /* Set through the variable ha-card itself reads, rather than overriding
+         its border-radius from out here -- that way it works whether ha-card
+         styles its own host or carries the radius inline. */
+      :host([data-layout="compact"]) {
+        --ha-card-border-radius: var(--acc-compact-radius, 22px);
+      }
+
+      .surface.compact { padding: 0; cursor: default; }
+      .surface.compact .notice { margin: 8px 10px 0; }
+
+      .ctiles { display: flex; flex-direction: column; }
+
+      .ctile {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas:
+          "icon cur"
+          "name target";
+        align-items: center;
+        column-gap: 10px;
+        row-gap: 2px;
+        width: 100%;
+        margin: 0;
+        padding: 10px 13px;
+        border: 0;
+        background: none;
+        border-radius: inherit;
+        font: inherit;
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .ctile:focus-visible {
+        outline: none;
+        box-shadow: inset 0 0 0 2px var(--primary-color, #03a9f4);
+      }
+      .ctile.unavailable { opacity: 0.55; }
+
+      .ctile .modeicon {
+        grid-area: icon;
+        width: 26px;
+        height: 26px;
+        border-radius: 0;
+      }
+      .ctile .modeicon::before { content: none; }
+      .ctile .modeicon ha-icon { --mdc-icon-size: 24px; width: 24px; height: 24px; }
+      .ctile .modeicon.running::after { inset: -5px; border-radius: 50%; }
+
+      .ccur {
+        grid-area: cur;
+        justify-self: end;
+        font-size: 17px;
+        font-weight: 700;
+        line-height: 1.15;
+        white-space: nowrap;
+        color: var(--acc-compact-current, #ffb74d);
+      }
+      .ctarget {
+        grid-area: target;
+        justify-self: end;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.15;
+        white-space: nowrap;
+        color: var(--acc-compact-target, #ffa726);
+        opacity: 0.85;
+      }
+      .cname {
+        grid-area: name;
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.15;
+        color: var(--primary-text-color, #e1e1e1);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* Two tiles per row on a phone: shed a little size rather than wrap. */
+      @container acc (max-width: 172px) {
+        .ctile { padding: 9px 10px; column-gap: 7px; }
+        .ccur { font-size: 15px; }
+        .ctarget { font-size: 12px; }
+        .cname { font-size: 11px; }
+        .ctile .modeicon { width: 22px; height: 22px; }
+        .ctile .modeicon ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
+      }
+
       /* =========================================================== controls */
       .controls {
         display: grid;
@@ -1278,6 +1513,18 @@ class AcControlCard extends HTMLElement {
 
 const GLOBAL_SCHEMA = [
   {
+    name: "layout",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "full", label: "Full — controls and status" },
+          { value: "compact", label: "Compact — small tile, tap to open controls" },
+        ],
+      },
+    },
+  },
+  {
     name: "temperature_step",
     selector: { number: { min: 0.1, max: 5, step: 0.1, mode: "box" } },
   },
@@ -1304,6 +1551,7 @@ const ROOM_SCHEMA = [
 ];
 
 const LABELS = {
+  layout: "Layout",
   temperature_step: "Step (°)",
   show_name: "Show room names",
   show_boost: "Show boost button",
@@ -1344,8 +1592,16 @@ class AcControlCardEditor extends HTMLElement {
     this._render(first && !this._built);
   }
 
-  /* Always emit the `rooms:` form so the shape is predictable once edited. */
-  _emit() {
+  /**
+   * Always emit the `rooms:` form so the shape is predictable once edited.
+   *
+   * `structural` is for changes that alter the *set* of rooms — added, removed
+   * or reordered — which need the editor rebuilt. A plain field edit must not
+   * rebuild: it fires on every keystroke, and replacing the inputs mid-word
+   * takes the focus out of the field being typed in. `_syncForms()` already
+   * pushes new values and room titles into the existing elements.
+   */
+  _emit(structural = false) {
     const out = { type: `custom:${CARD_TYPE}` };
     for (const k of GLOBAL_KEYS) {
       if (this._config[k] !== undefined && this._config[k] !== "") out[k] = this._config[k];
@@ -1364,7 +1620,7 @@ class AcControlCardEditor extends HTMLElement {
         composed: true,
       }),
     );
-    this._render(true);
+    this._render(structural);
   }
 
   _label(s) {
@@ -1470,7 +1726,7 @@ class AcControlCardEditor extends HTMLElement {
         { room_name: "", climate_entity: "", room_temp_entity: "", target_temp_entity: "" },
       ];
       this._open = this._rooms.length - 1;
-      this._emit();
+      this._emit(true);
     });
     wrap.appendChild(add);
 
@@ -1529,7 +1785,7 @@ class AcControlCardEditor extends HTMLElement {
     del.addEventListener("click", () => {
       this._rooms = this._rooms.filter((_, j) => j !== i);
       if (this._open >= this._rooms.length) this._open = this._rooms.length - 1;
-      this._emit();
+      this._emit(true);
     });
 
     head.append(title, up, down, edit, del);
@@ -1564,7 +1820,7 @@ class AcControlCardEditor extends HTMLElement {
     this._rooms = next;
     if (this._open === i) this._open = j;
     else if (this._open === j) this._open = i;
-    this._emit();
+    this._emit(true);
   }
 
   _syncForms() {

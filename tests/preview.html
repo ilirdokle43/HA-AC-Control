@@ -35,6 +35,10 @@
   .row { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
   .slot { flex: 0 0 auto; }
   .w520 { width: 520px; } .w380 { width: 380px; } .w300 { width: 300px; } .w240 { width: 240px; }
+  /* Stands in for a Home Assistant sections grid: 12 columns, 8px gaps. */
+  .secgrid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 8px; max-width: 900px; }
+  .secgrid.phone { max-width: 380px; }
+  .span3 { grid-column: span 3; } .span6 { grid-column: span 6; }
   .bar {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
     padding-bottom: 14px; border-bottom: 1px solid var(--divider-color);
@@ -78,6 +82,12 @@
     <div class="slot w520" id="f"></div>
     <div class="slot w380" id="g"></div>
   </div>
+
+  <h2>Compact layout — four across a desktop section (columns: 3)</h2>
+  <div class="secgrid" id="compact-desktop"></div>
+
+  <h2>Compact layout — two across on a phone (columns: 6)</h2>
+  <div class="secgrid phone" id="compact-phone"></div>
 
   <div class="log" id="log"></div>
 
@@ -142,6 +152,24 @@
     type: "custom:ac-control-card",
     rooms: [{ room_name: "New room" }],
   }, makeHass(demoStates()));
+
+  /* ---- compact layout: one card per room, sharing the same demo house so the
+     toolbar buttons drive the tiles too. */
+  function mountCompact(hostId, span) {
+    for (const room of DEMO_CONFIG.rooms) {
+      const slot = document.createElement("div");
+      slot.className = span;
+      document.getElementById(hostId).appendChild(slot);
+      const card = document.createElement("ac-control-card");
+      card.setConfig({ type: "custom:ac-control-card", layout: "compact", rooms: [room] });
+      slot.appendChild(card);
+      card.hass = house;
+      card.addEventListener("hass-more-info", (e) => log(`more-info  ${e.detail.entityId}`));
+      cards.push(card);
+    }
+  }
+  mountCompact("compact-desktop", "span3");
+  mountCompact("compact-phone", "span6");
 
   /* ---- demo controls */
   document.getElementById("theme").addEventListener("click", () => {

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ac-control-card — compact screenshot fixture</title>
+<!--
+  The fixture the compact-layout README screenshots are generated from. Lays
+  four one-room compact cards out on a stand-in Home Assistant sections grid,
+  using only demo entity ids. Capture it with, from the repository root:
+
+    python -m http.server 8783
+    chrome --headless=new --disable-gpu --window-size=720,150 \
+           --screenshot=docs/compact.png http://localhost:8783/tests/shot-compact.html
+
+  Append ?cols=6 for the phone arrangement (two per row), e.g.
+
+    chrome --headless=new --disable-gpu --window-size=380,190 \
+           --screenshot=docs/compact-mobile.png \
+           "http://localhost:8783/tests/shot-compact.html?cols=6&w=380"
+-->
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; }
+  body {
+    width: 720px;
+    padding: 20px;
+    box-sizing: border-box;
+    background: #111418;
+    font-family: Roboto, "Segoe UI", system-ui, sans-serif;
+    --divider-color: rgba(255,255,255,.10);
+    --primary-text-color: #e6e6e6;
+    --secondary-text-color: #9aa0a6;
+    --disabled-text-color: #6f6f6f;
+    --card-background-color: #1b1f26;
+    --ha-card-border-radius: 14px;
+    --primary-color: #03a9f4;
+  }
+  /* Stands in for a Home Assistant sections grid: 12 columns, 8px gaps. */
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 8px; }
+</style>
+</head>
+<body>
+  <div class="grid" id="grid"></div>
+<script type="module">
+  import { installStubs, makeHass, climate, sensor, number, toggle } from "./ha-stubs.js";
+  import "../ac-control-card.js";
+
+  installStubs();
+
+  // A varied snapshot: two cooling (one in boost), one off, one unavailable.
+  // All ids are demo ids.
+  const ROOMS = [
+    { key: "kitchen",     name: "Kitchen",     cur: 22.4, target: 17, state: "cool", fan: "high",   action: "cooling", preset: "boost" },
+    { key: "study",       name: "Study",       cur: 20.7, target: 19, state: "cool", fan: "low",    action: "cooling", preset: "none" },
+    { key: "bedroom",     name: "Bedroom",     cur: 24.1, target: 20, state: "off",  fan: "low",    action: null,      preset: "none" },
+    { key: "living_room", name: "Living Room", cur: 19.8, target: 21, state: "unavailable" },
+  ];
+
+  const params = new URLSearchParams(location.search);
+  const cols = Number(params.get("cols")) || 3;
+  const w = Number(params.get("w"));
+  if (Number.isFinite(w) && w > 0) document.body.style.width = `${w}px`;
+
+  const grid = document.getElementById("grid");
+
+  for (const r of ROOMS) {
+    const s = {};
+    const off = r.state === "unavailable";
+    s[`climate.demo_${r.key}_ac`] = off
+      ? { state: "unavailable", attributes: {} }
+      : climate(r.state, { friendly_name: r.name, fan_mode: r.fan, preset_mode: r.preset,
+          hvac_action: r.action, temperature: r.target });
+    s[`sensor.demo_${r.key}_temperature`] = off ? sensor("unavailable") : sensor(r.cur);
+    s[`input_number.demo_${r.key}_target`] = number(r.target);
+    s[`automation.demo_${r.key}_ac_command`] = toggle("on");
+
+    const slot = document.createElement("div");
+    slot.style.gridColumn = `span ${cols}`;
+    grid.appendChild(slot);
+
+    const card = document.createElement("ac-control-card");
+    card.setConfig({
+      type: "custom:ac-control-card",
+      layout: "compact",
+      rooms: [{
+        room_name: r.name,
+        climate_entity: `climate.demo_${r.key}_ac`,
+        room_temp_entity: `sensor.demo_${r.key}_temperature`,
+        target_temp_entity: `input_number.demo_${r.key}_target`,
+      }],
+    });
+    slot.appendChild(card);
+    card.hass = makeHass(s);
+  }
+</script>
+</body>
+</html>

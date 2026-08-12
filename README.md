@@ -17,6 +17,15 @@ under the fan:
 |---|---|
 | ![Mobile](docs/mobile.png) | ![Narrow](docs/narrow.png) |
 
+Or `layout: compact` for a small tile per room, sized to sit several across a
+dashboard. Tap one to open that unit's full controls:
+
+![Compact layout](docs/compact.png)
+
+On a phone, two per row:
+
+![Compact layout on a phone](docs/compact-mobile.png)
+
 ## Features
 
 - **One card, many rooms.** Rooms are separated by a thin divider; the card height
@@ -74,6 +83,7 @@ under the fan:
 | Option | Default | Description |
 |---|---|---|
 | `rooms` | — | List of rooms (see below). Omit it to configure a single room at the top level. |
+| `layout` | `full` | `full` for the card with controls, `compact` for the small dashboard tile. `compact: true` works as a shorthand. |
 | `temperature_step` | `0.5` | How much − and + move the target helper. |
 | `show_name` | `true` | Show the room name line. |
 | `show_boost` | `true` | Show the boost button on units that support the preset. |
@@ -125,6 +135,50 @@ target_temp_entity: input_number.demo_studio_target
 season_entity: input_boolean.demo_heating_season
 ```
 
+### Example — compact tiles
+
+![Compact layout](docs/compact.png)
+
+`layout: compact` swaps the controls for a small tile: the fan, the room
+temperature, the room name and the AC's target. Tapping it opens that unit's full
+Home Assistant controls, so nothing is lost by shrinking it.
+
+One card per room, so a sections dashboard can lay them out side by side:
+
+```yaml
+type: custom:ac-control-card
+layout: compact
+name: Kitchen
+climate_entity: climate.demo_kitchen_ac
+room_temp_entity: sensor.demo_kitchen_temperature
+target_temp_entity: input_number.demo_kitchen_target
+```
+
+The tile asks for a quarter of a section, so four sit in a row on a desktop
+dashboard. Home Assistant's own layout editor owns the width from there — drag a
+tile to six columns for two per row on a phone. It can also be dragged down to two
+columns, and shrinks its type to suit.
+
+Rooms can still be listed, in which case the card stacks one tile per room:
+
+```yaml
+type: custom:ac-control-card
+layout: compact
+rooms:
+  - room_name: Kitchen
+    climate_entity: climate.demo_kitchen_ac
+    room_temp_entity: sensor.demo_kitchen_temperature
+    target_temp_entity: input_number.demo_kitchen_target
+  - room_name: Study
+    climate_entity: climate.demo_study_ac
+    room_temp_entity: sensor.demo_study_temperature
+    target_temp_entity: input_number.demo_study_target
+```
+
+Everything else — the entities, the fan colours, the spin speed — behaves exactly
+as it does in the full card. Boost, the difference badge and the status line are
+the only things the tile leaves out.
+
 ## How the buttons behave
 
 - **− / +** call `input_number.set_value` on `target_temp_entity`, moving by
@@ -161,6 +215,9 @@ Colours come from your theme where possible, and can be overridden per-card with
 | `--acc-target-cool` | `#23aa08` | Target temperature in the cooling season |
 | `--acc-target-heat` | `#fc0000` | Target temperature in the heating season |
 | `--ac-control-card-gap` | `0` | Margin below the card, for containers that add no spacing of their own, such as `vertical-stack` |
+| `--acc-compact-current` | `#ffb74d` | Room temperature on the compact tile |
+| `--acc-compact-target` | `#ffa726` | Target temperature on the compact tile |
+| `--acc-compact-radius` | `22px` | Corner radius of the compact tile |
 
 ## Notes
 

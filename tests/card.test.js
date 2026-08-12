@@ -914,6 +914,178 @@ describe("responsive layout", () => {
 
 /* ------------------------------------------------------------------- run */
 
+describe("compact layout", () => {
+  const compact = (extra = {}) => ({ ...oneRoom(), layout: "compact", ...extra });
+
+  it("renders a tile per room and none of the full card's furniture", () => {
+    const m = mount(compact(), makeHass(), 200);
+    assert.equal(m.qa(".ctile").length, 1);
+    assert.equal(m.qa(".ctl").length, 0, "compact carries no buttons of its own");
+    assert.notOk(m.q(".controls"), "no control row");
+    assert.notOk(m.q(".ctl.boost"), "no boost button");
+    assert.notOk(m.q(".status"), "no status line");
+    assert.notOk(m.q(".delta"), "no difference badge");
+  });
+
+  it("shows the room temperature, the target and the name", () => {
+    const m = mount(compact(), makeHass(), 200);
+    assert.equal(m.q(".ccur").textContent, "26.5°");
+    assert.equal(m.q(".ctarget").textContent, "20°");
+    assert.equal(m.q(".cname").textContent, "Bedroom");
+  });
+
+  it("accepts `compact: true` as a shorthand", () => {
+    const m = mount({ ...oneRoom(), compact: true }, makeHass(), 200);
+    assert.ok(m.q(".ctile"), "compact: true should select the compact layout");
+  });
+
+  it("rejects an unknown layout", () => {
+    assert.throws(() => {
+      document.createElement("ac-control-card").setConfig({ ...oneRoom(), layout: "tiny" });
+    });
+  });
+
+  it("takes its fan colour and spin from the same logic as the full card", () => {
+    const states = demoStates();
+    states["climate.demo_bedroom_ac"] = climate("cool", { hvac_action: "cooling", fan_mode: "high" });
+    const on = mount(compact(), makeHass(states), 200);
+    assert.match(on.q(".modeicon").className, /m-cool/);
+    assert.ok(on.q(".modeicon").classList.contains("running"), "cooling should glow");
+    // Browsers expand the `animation` shorthand on read-back, so check the name.
+    assert.equal(on.q(".modeicon ha-icon").style.animationName, "acc-spin");
+
+    const off = mount(compact(), makeHass(), 200);
+    assert.match(off.q(".modeicon").className, /m-off/);
+    assert.equal(
+      off.q(".modeicon ha-icon").style.animationName,
+      "none",
+      "an off unit does not spin",
+    );
+  });
+
+  it("mutes the tile when the unit is unavailable", () => {
+    const states = demoStates();
+    states["climate.demo_bedroom_ac"] = climate("unavailable");
+    states["sensor.demo_bedroom_temperature"] = sensor("unavailable");
+    const m = mount(compact(), makeHass(states), 200);
+    assert.ok(m.q(".ctile").classList.contains("unavailable"));
+    assert.equal(m.q(".ccur").textContent, "—", "never invents a temperature");
+  });
+
+  it("opens the full controls for its own room when tapped", () => {
+    const m = mount(compact(), makeHass(), 200);
+    let opened = null;
+    m.card.addEventListener("hass-more-info", (e) => {
+      opened = e.detail.entityId;
+    });
+    m.q(".ctile").click();
+    assert.equal(opened, "climate.demo_bedroom_ac");
+  });
+
+  it("gives every room its own tile and its own more-info target", () => {
+    const m = mount({ ...DEMO_CONFIG, layout: "compact" }, makeHass(), 220);
+    const tiles = m.qa(".ctile");
+    assert.equal(tiles.length, 3);
+    const opened = [];
+    m.card.addEventListener("hass-more-info", (e) => opened.push(e.detail.entityId));
+    tiles.forEach((t) => t.click());
+    assert.equal(opened.join(","), "climate.demo_bedroom_ac,climate.demo_office_ac,climate.demo_living_room_ac");
+  });
+
+  it("asks for a narrow, content-sized slot so several sit in a row", () => {
+    const g = mount(compact(), makeHass(), 200).card.getGridOptions();
+    assert.equal(g.columns, 3, "a quarter of a section by default");
+    assert.equal(g.min_columns, 2, "can be dragged down to two per row");
+    assert.equal(g.rows, "auto");
+  });
+
+  it("is much shorter than the full card", async () => {
+    const c = mount(compact(), makeHass(), 200);
+    const f = mount(oneRoom(), makeHass(), 200);
+    await frame();
+    const ch = c.card.getBoundingClientRect().height;
+    const fh = f.card.getBoundingClientRect().height;
+    assert.ok(ch < fh / 2, `compact ${Math.round(ch)}px should be well under half of full ${Math.round(fh)}px`);
+  });
+
+  it("leaves the full card completely alone when layout is not set", () => {
+    const m = mount(oneRoom(), makeHass(), 520);
+    assert.notOk(m.q(".ctile"), "no compact tile");
+    assert.notOk(m.card.getAttribute("data-layout"), "no compact marker on the host");
+    assert.ok(m.q(".controls"), "control row still there");
+    assert.equal(m.qa(".controls .ctl").length, 4, "still four controls");
+    assert.ok(m.q(".ctl.boost"), "boost still there");
+    assert.ok(m.q(".status"), "status line still there");
+  });
+});
+
+describe("editor", () => {
+  function editor(config) {
+    const ed = document.createElement("ac-control-card-editor");
+    stage().appendChild(ed);
+    ed.setConfig(config);
+    ed.hass = makeHass();
+    return ed;
+  }
+
+  const type = (form, patch) =>
+    form.dispatchEvent(
+      new CustomEvent("value-changed", {
+        detail: { value: patch },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+
+  it("does not tear down the field being typed in", () => {
+    // Every keystroke emits a config change. Rebuilding the editor there
+    // replaces the input mid-word and the caret jumps out of the field.
+    const ed = editor(oneRoom());
+    const form = ed.querySelector(".acc-room-body ha-form");
+    assert.ok(form, "the open room should have a form");
+
+    type(form, { room_name: "P" });
+    assert.equal(ed.querySelector(".acc-room-body ha-form"), form, "form survives one keystroke");
+
+    type(form, { room_name: "Pa" });
+    assert.equal(ed.querySelector(".acc-room-body ha-form"), form, "and the next");
+  });
+
+  it("keeps the card-level form alive too", () => {
+    const ed = editor(oneRoom());
+    const gForm = ed.querySelector("ha-form");
+    type(gForm, { temperature_step: 1 });
+    assert.equal(ed.querySelector("ha-form"), gForm);
+  });
+
+  it("still shows what was typed in the room's title", () => {
+    const ed = editor(oneRoom());
+    type(ed.querySelector(".acc-room-body ha-form"), { room_name: "Pa" });
+    assert.equal(ed.querySelector(".acc-room-title b").textContent, "Pa");
+  });
+
+  it("reports the edit upwards", () => {
+    const ed = editor(oneRoom());
+    let emitted = null;
+    ed.addEventListener("config-changed", (e) => {
+      emitted = e.detail.config;
+    });
+    type(ed.querySelector(".acc-room-body ha-form"), { room_name: "Pa" });
+    assert.equal(emitted.rooms[0].room_name, "Pa");
+  });
+
+  it("does rebuild when the set of rooms changes", () => {
+    const ed = editor(oneRoom());
+    const before = ed.querySelector(".acc-room-body ha-form");
+    ed.querySelector(".acc-add").click();
+    assert.equal(ed.querySelectorAll(".acc-room").length, 2, "a second room should appear");
+    assert.notOk(
+      ed.contains(before),
+      "adding a room has to rebuild, so the old form is gone",
+    );
+  });
+});
+
 export async function run(report) {
   let pass = 0;
   let failed = 0;
