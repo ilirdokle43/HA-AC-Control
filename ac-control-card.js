@@ -28,7 +28,7 @@
  */
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2.0.0";
+const CARD_VERSION = "2.0.1";
 
 /* ------------------------------------------------------------------ config */
 
