@@ -246,25 +246,49 @@ class AcControlCard extends HTMLElement {
     return this._rooms.length > 1;
   }
 
+  /**
+   * Roughly how tall the card renders, in px.
+   *
+   * A room row is not one fixed height: below the 430px breakpoint the controls
+   * move onto their own line, which makes every row about 50% taller, and below
+   * 280px everything shrinks again. Measuring the three layouts gives
+   * `base + perRoom * rooms` in each case. The width is read from the element
+   * when it is already on screen; before that we assume the *narrow* layout,
+   * because guessing too small is what makes neighbouring cards overlap.
+   */
+  _estimatedHeightPx() {
+    const n = this._rooms.length;
+    const w = this.getBoundingClientRect ? this.getBoundingClientRect().width : 0;
+    if (w > 431) return 11 + 106 * n; // controls share the room's line
+    if (w && w <= 280) return 3 + 140 * n; // compact everything
+    return 7 + 155 * n; // controls on their own line
+  }
+
+  /** Masonry counts in ~50px units. */
   getCardSize() {
-    return 1 + this._rooms.length;
+    return Math.max(2, Math.ceil(this._estimatedHeightPx() / 50));
   }
 
-  /** Sections dashboard sizing. One HA grid row is ~56px. */
+  /**
+   * Sections dashboard sizing. `rows: "auto"` asks Home Assistant to size the
+   * grid row from what the card actually renders — the only thing that stays
+   * right across the responsive breakpoints. A fixed row count cannot: the same
+   * card is 117px wide-layout and 162px narrow-layout for a single room, so any
+   * one number overlaps the neighbouring card at some width.
+   */
   getGridOptions() {
-    const px = 28 + this._rooms.length * 78;
-    const rows = Math.max(2, Math.ceil(px / 56));
-    return { columns: 12, rows, min_columns: 6, min_rows: Math.max(2, rows - 1) };
+    return { columns: 12, rows: "auto", min_columns: 6, min_rows: 2 };
   }
 
+  /** Pre-2024.11 name for the same thing, which has to name a row count. */
   getLayoutOptions() {
-    const g = this.getGridOptions();
-    return {
-      grid_columns: g.columns,
-      grid_rows: g.rows,
-      grid_min_columns: g.min_columns,
-      grid_min_rows: g.min_rows,
-    };
+    const rows = this._gridRowsFor(this._estimatedHeightPx());
+    return { grid_columns: 12, grid_rows: rows, grid_min_columns: 6, grid_min_rows: 2 };
+  }
+
+  /** HA grid rows are 56px tall with an 8px gap, so n rows hold 64n - 8 px. */
+  _gridRowsFor(px) {
+    return Math.max(2, Math.ceil((px + 8) / 64));
   }
 
   static getStubConfig() {
@@ -910,7 +934,13 @@ class AcControlCard extends HTMLElement {
 
   static get styles() {
     return `
-      :host { display: block; }
+      /* Sections and masonry views already space cards apart, so no margin by
+         default. Set --ac-control-card-gap to add one inside a container that
+         does not, such as vertical-stack. */
+      :host {
+        display: block;
+        margin-bottom: var(--ac-control-card-gap, 0px);
+      }
 
       ha-card {
         container-type: inline-size;

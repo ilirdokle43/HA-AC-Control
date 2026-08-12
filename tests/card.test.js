@@ -225,12 +225,37 @@ describe("config", () => {
   it("sizes itself from the number of rooms", () => {
     const one = mount(oneRoom(), makeHass());
     const three = mount(DEMO_CONFIG, makeHass());
-    assert.equal(one.card.getCardSize(), 2);
-    assert.equal(three.card.getCardSize(), 4);
     assert.ok(
-      three.card.getGridOptions().rows > one.card.getGridOptions().rows,
+      three.card.getCardSize() > one.card.getCardSize(),
+      "three rooms should count for more than one",
+    );
+    assert.ok(
+      three.card.getLayoutOptions().grid_rows > one.card.getLayoutOptions().grid_rows,
       "three rooms should need more grid rows than one",
     );
+  });
+
+  it("lets a sections view size the row from the real card", () => {
+    // A fixed row count cannot be right at every width, so the card must not
+    // name one. Naming one too small is what let neighbouring cards overlap it.
+    assert.equal(mount(DEMO_CONFIG, makeHass()).card.getGridOptions().rows, "auto");
+  });
+
+  it("never claims fewer grid rows than it renders, at any width", () => {
+    // Below 430px the controls drop onto their own line and every room row
+    // grows by ~50%. An estimate blind to that overlaps the card below it.
+    for (const width of [260, 300, 380, 520, 700]) {
+      for (const config of [oneRoom(), DEMO_CONFIG]) {
+        const m = mount(config, makeHass(), width);
+        const real = m.card.getBoundingClientRect().height;
+        const rows = m.card.getLayoutOptions().grid_rows;
+        const held = rows * 56 + (rows - 1) * 8;
+        assert.ok(
+          held >= real,
+          `at ${width}px: ${rows} rows hold ${held}px but the card renders ${Math.round(real)}px`,
+        );
+      }
+    }
   });
 });
 

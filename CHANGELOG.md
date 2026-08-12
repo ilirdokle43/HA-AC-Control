@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Cards no longer overlap each other in a sections dashboard.** `getGridOptions()`
+  estimated the card's height as `28 + 78 × rooms`, which only ever described the
+  wide layout. Below the 430px breakpoint the controls move onto their own line and
+  every room row grows by about half, so a card in a narrow section column claimed
+  two grid rows (120px) while rendering 162px — and the next card was drawn 42px
+  into it. Three-room cards overlapped by 17px even at full width.
+
+  The card now reports `rows: "auto"` so Home Assistant sizes the grid row from
+  what is actually rendered, which is the only estimate that holds at every width.
+  `getCardSize()` and the legacy `getLayoutOptions()` use measured per-layout
+  heights (`11 + 106 × rooms` wide, `7 + 155 × rooms` narrow, `3 + 140 × rooms`
+  below 280px) and assume the narrow layout when the width is not yet known, since
+  guessing small is what causes the overlap.
+
+### Added
+
+- `--ac-control-card-gap` to add a margin below the card, for containers that add
+  no spacing themselves such as `vertical-stack`. Defaults to `0`, since sections
+  and masonry views already space cards apart.
+
 ## 2.0.0
 
 Redesign around a single rounded card that holds every configured room.

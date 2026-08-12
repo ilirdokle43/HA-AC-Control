@@ -160,28 +160,7 @@ Colours come from your theme where possible, and can be overridden per-card with
 | `--acc-auto-off` | `#e05252` | AUTO disabled |
 | `--acc-target-cool` | `#23aa08` | Target temperature in the cooling season |
 | `--acc-target-heat` | `#fc0000` | Target temperature in the heating season |
-
-## Development
-
-The card is a plain custom element in a single file — edit it and reload Home
-Assistant, there is nothing to build.
-
-A dependency-free test suite and a visual preview live in [`tests/`](tests). Serve
-the repository root and open them in a browser:
-
-```bash
-python -m http.server 8783
-```
-
-- `http://localhost:8783/tests/index.html` — the test suite (state logic, service
-  calls, per-room isolation, responsive layout)
-- `http://localhost:8783/tests/preview.html` — an interactive preview at several
-  widths, in light and dark
-- `http://localhost:8783/tests/shot.html` — the fixture the README screenshot is
-  rendered from
-
-Every entity id used in the tests, the preview and the screenshot is a made-up demo
-id.
+| `--ac-control-card-gap` | `0` | Margin below the card, for containers that add no spacing of their own, such as `vertical-stack` |
 
 ## Notes
 
