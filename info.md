@@ -11,9 +11,13 @@ and four touch-sized controls.
 - `▲ 6.5°` / `▼ 0.2°` difference badge, never `NaN` or `unknown`
 - Fan tinted by HVAC mode; spins only while air is moving
 - Boost, power, AUTO and ± target controls, per room
+- **Compact mode** — `layout: compact` for a small dashboard tile, tap to open the
+  full controls
 - Unavailable rooms are muted and their unsafe controls disabled
 - GUI editor — no hand-written YAML needed
 - One file, no build step, no external dependencies
+
+![Compact layout](https://raw.githubusercontent.com/ilirdokle43/HA-AC-Control/master/docs/compact.png)
 
 ```yaml
 type: custom:ac-control-card

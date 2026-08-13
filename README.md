@@ -42,6 +42,9 @@ On a phone, two per row:
   deliberately kept out of the main control row so those four buttons fit one line
   even on a phone. Units without a `boost` preset don't show it at all.
 - **Four controls per room** on the right — minus, plus, power and AUTO.
+- **Compact dashboard mode** — `layout: compact` shrinks the card to a small tile
+  showing just the fan, the room temperature, the room name and the target. Tap it
+  to open that unit's full Home Assistant controls. Sized so several sit in a row.
 - **Per-room isolation.** Every room's status, colours and button states come only
   from that room's own entities, so an unavailable unit never affects its neighbours.
 - **Careful state handling.** Unavailable rooms are muted, controls that cannot act
@@ -218,6 +221,50 @@ Colours come from your theme where possible, and can be overridden per-card with
 | `--acc-compact-current` | `#ffb74d` | Room temperature on the compact tile |
 | `--acc-compact-target` | `#ffa726` | Target temperature on the compact tile |
 | `--acc-compact-radius` | `22px` | Corner radius of the compact tile |
+
+## Troubleshooting
+
+**The card looks unchanged after updating.** Browsers cache Lovelace resources for
+weeks. Reload with `Ctrl+Shift+R`, or reset the frontend cache from the companion
+app. If it still looks stale, add a version marker to the resource URL under
+**Settings → Dashboards → ⋮ → Resources** — `…/ac-control-card.js?v=2` — since a
+changed URL is the only thing a browser is guaranteed to re-fetch.
+
+**"Custom element doesn't exist: ac-control-card".** The resource is not loading.
+Check that it is registered as a **JavaScript module** (not a stylesheet), and that
+the URL resolves in a browser tab.
+
+**"Not configured yet" on the card.** One of the three required options is missing.
+Every room needs `climate_entity`, `room_temp_entity` and `target_temp_entity`.
+
+**"Entity not found".** The card is configured with an entity id Home Assistant does
+not know about — usually a typo, or an entity that has been renamed or removed.
+
+**The temperature shows `—`.** The sensor is unavailable or is not reporting a
+number. The card never invents a placeholder value.
+
+**The fan does not spin.** It only turns while air is actually moving. A unit that is
+off, idle, unavailable, or powered but coasting shows a stationary fan. If your
+integration reports `hvac_action`, that is used; otherwise any mode other than `off`
+counts as moving air. The fan also stops for anyone who has "reduce motion" enabled
+in their operating system.
+
+**No boost button.** It only appears on units whose `preset_modes` include `boost`.
+Check the climate entity's attributes in **Developer Tools → States**. It can also
+be switched off for the whole card with `show_boost: false`.
+
+**Boost turns itself off after about half an hour.** That is the air conditioner,
+not the card. Turbo/boost is a time-limited burst on most units and the hardware
+exits it on its own.
+
+**AUTO is greyed out.** The automation entity does not exist. By default the card
+looks for `automation.<climate object id>_command`; set `automation_cool_entity` and
+`automation_heat_entity` explicitly if yours are named differently.
+
+**Compact tiles stack instead of sitting side by side.** Use one compact card *per
+room* — a card occupies a single slot in a sections grid, so a card holding several
+rooms stacks them inside that one slot. Also check each tile's width: a section is
+12 columns, so two tiles need 6 columns each to fill a row, four need 3 each.
 
 ## Notes
 

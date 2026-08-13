@@ -1,6 +1,21 @@
 # Changelog
 
-## 2.1.0
+## 2.1.1
+
+Documentation and packaging only — the card behaves exactly as it did in 2.1.0.
+
+### Added
+
+- A **Troubleshooting** section in the README covering caching after an update, the
+  "custom element doesn't exist" error, missing entities, a stationary fan, a
+  missing boost button, boost timing out on the unit itself, a greyed-out AUTO, and
+  compact tiles stacking instead of sitting side by side.
+- Compact mode in the feature list and in the HACS panel description.
+- `ac-control-card.js` is attached to the GitHub release as a downloadable asset.
+
+### Changed
+
+- Every screenshot regenerated from the current build at 2× for sharper rendering.
 
 ### Added
 
