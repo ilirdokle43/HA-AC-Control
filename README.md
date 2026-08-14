@@ -26,6 +26,10 @@ On a phone, two per row:
 
 ![Compact layout on a phone](docs/compact-mobile.png)
 
+The same tiles on a light theme:
+
+![Compact layout on a light theme](docs/compact-light.png)
+
 ## Features
 
 - **One card, many rooms.** Rooms are separated by a thin divider; the card height
@@ -218,8 +222,8 @@ Colours come from your theme where possible, and can be overridden per-card with
 | `--acc-target-cool` | `#23aa08` | Target temperature in the cooling season |
 | `--acc-target-heat` | `#fc0000` | Target temperature in the heating season |
 | `--ac-control-card-gap` | `0` | Margin below the card, for containers that add no spacing of their own, such as `vertical-stack` |
-| `--acc-compact-current` | `#ffb74d` | Room temperature on the compact tile |
-| `--acc-compact-target` | `#ffa726` | Target temperature on the compact tile |
+| `--acc-compact-current` | amber | Room temperature on the compact tile. The default blends toward the theme's text colour so it stays readable on light themes as well as dark; set it to pin one colour. |
+| `--acc-compact-target` | amber | Target temperature on the compact tile, same blending |
 | `--acc-compact-radius` | `22px` | Corner radius of the compact tile |
 
 ## Troubleshooting

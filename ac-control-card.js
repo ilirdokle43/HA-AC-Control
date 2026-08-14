@@ -28,7 +28,7 @@
  */
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2.1.1";
+const CARD_VERSION = "2026.8.14";
 
 /* ------------------------------------------------------------------ config */
 
@@ -1364,6 +1364,11 @@ class AcControlCard extends HTMLElement {
       .ctile .modeicon ha-icon { --mdc-icon-size: 24px; width: 24px; height: 24px; }
       .ctile .modeicon.running::after { inset: -5px; border-radius: 50%; }
 
+      /* Amber reads well on a dark card but washes out to roughly 1.7:1 on a
+         white one. Blending it toward the theme's own text colour tracks the
+         theme instead of the OS, since a dark Home Assistant theme is perfectly
+         normal on a light desktop -- prefers-color-scheme would get that wrong.
+         Setting either variable still wins outright. */
       .ccur {
         grid-area: cur;
         justify-self: end;
@@ -1371,7 +1376,10 @@ class AcControlCard extends HTMLElement {
         font-weight: 700;
         line-height: 1.15;
         white-space: nowrap;
-        color: var(--acc-compact-current, #ffb74d);
+        color: var(
+          --acc-compact-current,
+          color-mix(in srgb, #ffb74d 62%, var(--primary-text-color, #e1e1e1))
+        );
       }
       .ctarget {
         grid-area: target;
@@ -1380,7 +1388,10 @@ class AcControlCard extends HTMLElement {
         font-weight: 600;
         line-height: 1.15;
         white-space: nowrap;
-        color: var(--acc-compact-target, #ffa726);
+        color: var(
+          --acc-compact-target,
+          color-mix(in srgb, #ffa726 66%, var(--primary-text-color, #e1e1e1))
+        );
         opacity: 0.85;
       }
       .cname {

@@ -159,7 +159,9 @@ describe("registration", () => {
   });
 
   it("exports a version string", () => {
-    assert.match(CARD_VERSION, /^\d+\.\d+\.\d+$/);
+    // Date-based: YYYY.M.D, with a trailing counter for a second release the
+    // same day (YYYY.M.D.1). Older semver releases match the same shape.
+    assert.match(CARD_VERSION, /^\d+\.\d+\.\d+(\.\d+)?$/);
   });
 });
 

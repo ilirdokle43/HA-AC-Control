@@ -1,5 +1,26 @@
 # Changelog
 
+Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counter
+(`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
+releases used semantic versions.
+
+## 2026.8.14
+
+### Fixed
+
+- **The compact tile's temperatures were close to unreadable on a light theme.**
+  The amber sat at roughly 1.7:1 against a white card. Both colours are now blended
+  toward the theme's own text colour, which lifts them to about 3.6:1 on a light
+  card while leaving the dark card at 10.7:1 and looking as it did before. The blend
+  follows the *theme* rather than the operating system, since a dark Home Assistant
+  theme on a light desktop is perfectly normal — `prefers-color-scheme` would get
+  that case wrong. Setting `--acc-compact-current` or `--acc-compact-target` still
+  overrides it outright.
+
+### Changed
+
+- Version scheme is now date-based; `CARD_VERSION` reports `2026.8.14`.
+
 ## 2.1.1
 
 Documentation and packaging only — the card behaves exactly as it did in 2.1.0.
