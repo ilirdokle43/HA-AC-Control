@@ -10,15 +10,19 @@ target, how far apart they are, the current HVAC mode, and four touch-sized cont
 Everything is picked from dropdowns in a GUI editor, so no hand-written YAML is
 required. One file, no build step, no external dependencies.
 
-The same card at phone widths — the four controls keep one line, and boost stays
-under the fan:
+The controls sit two-by-two beside the text — minus and plus above, power and AUTO
+below — which leaves each button roughly twice the area of a single row of four,
+and hands the width it saves back to the temperatures.
+
+The same card at phone widths — the four controls drop to one line of their own,
+and boost stays under the fan:
 
 | 380px | 300px |
 |---|---|
 | ![Mobile](docs/mobile.png) | ![Narrow](docs/narrow.png) |
 
 Or `layout: compact` for a small tile per room, sized to sit several across a
-dashboard. Tap one to open that unit's full controls:
+dashboard. Tap one to turn that unit on or off:
 
 ![Compact layout](docs/compact.png)
 
@@ -45,10 +49,19 @@ The same tiles on a light theme:
   rocket, which lights orange while that room is boosting. It is a real control,
   deliberately kept out of the main control row so those four buttons fit one line
   even on a phone. Units without a `boost` preset don't show it at all.
-- **Four controls per room** on the right — minus, plus, power and AUTO.
+- **Four controls per room** — minus, plus, power and AUTO. Beside the text they
+  stack two-by-two so each button gets roughly double the area; on a phone they
+  drop to a single row on their own line.
+- **Live status line** — `COOL · HIGH · BOOST · 17°`, built in priority order from
+  the unit's own `hvac` mode, `fan_mode`, `preset_mode` and setpoint. Fan-speed
+  names are normalised (`medium` and `mid` both read `MID`), any active preset is
+  shown rather than boost alone, and anything the integration does not report is
+  simply left out. A unit that is off says just `OFF`, in larger muted type.
 - **Compact dashboard mode** — `layout: compact` shrinks the card to a small tile
-  showing just the fan, the room temperature, the room name and the target. Tap it
-  to open that unit's full Home Assistant controls. Sized so several sit in a row.
+  with the fan, the room temperature, the room name, a difference badge, the target
+  and the same status line. Tap it to turn that unit on or off. Sized so several
+  sit in a row, and the status line trims itself from the tail — target first, then
+  the special mode, then the fan speed — rather than ever overflowing the tile.
 - **Per-room isolation.** Every room's status, colours and button states come only
   from that room's own entities, so an unavailable unit never affects its neighbours.
 - **Careful state handling.** Unavailable rooms are muted, controls that cannot act
@@ -94,7 +107,7 @@ The same tiles on a light theme:
 | `temperature_step` | `0.5` | How much − and + move the target helper. |
 | `show_name` | `true` | Show the room name line. |
 | `show_boost` | `true` | Show the boost button on units that support the preset. |
-| `tap_action` | `more-info` | Standard HA action config for taps on the card body. |
+| `tap_action` | `more-info`, or `toggle` in compact | Standard HA action config for taps on the card body. The compact tile toggles the unit unless you set something else. |
 
 ### Room options
 
@@ -147,8 +160,9 @@ season_entity: input_boolean.demo_heating_season
 ![Compact layout](docs/compact.png)
 
 `layout: compact` swaps the controls for a small tile: the fan, the room
-temperature, the room name and the AC's target. Tapping it opens that unit's full
-Home Assistant controls, so nothing is lost by shrinking it.
+temperature, the room name, the difference badge, the target and the live status
+line. Tapping it turns that unit on or off; set `tap_action` if you would rather it
+opened the full Home Assistant controls.
 
 One card per room, so a sections dashboard can lay them out side by side:
 
@@ -182,9 +196,16 @@ rooms:
     target_temp_entity: input_number.demo_study_target
 ```
 
-Everything else — the entities, the fan colours, the spin speed — behaves exactly
-as it does in the full card. Boost, the difference badge and the status line are
-the only things the tile leaves out.
+Everything else — the entities, the fan colours, the spin speed, the difference
+badge, the status line — behaves exactly as it does in the full card, because both
+layouts read the same helpers. The boost button and the ± controls are the only
+things the tile leaves out.
+
+The status line fits itself to the tile. When there is not enough width for the
+whole thing it drops the lowest-priority part first — the target, then the special
+mode, then the fan speed — so the mode word is the last thing standing. It only
+ever trims when the text genuinely does not fit, so tablet and desktop tiles always
+show the lot.
 
 ## How the buttons behave
 

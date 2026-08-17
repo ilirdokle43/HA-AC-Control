@@ -63,7 +63,10 @@ export class HaCardStub extends HTMLElement {
     this.style.display = "block";
     this.style.background = "var(--card-background-color, #1c1f26)";
     this.style.borderRadius = "var(--ha-card-border-radius, 14px)";
-    this.style.border = "1px solid var(--ha-card-border-color, rgba(255,255,255,.06))";
+    // Only the style: the real ha-card's width and colour come from theme
+    // custom properties and are overridable by the card, so leaving them to the
+    // card's own rule is what the browser actually does here.
+    this.style.borderStyle = "solid";
     this.style.boxShadow = "0 2px 10px rgba(0,0,0,.45)";
   }
 }

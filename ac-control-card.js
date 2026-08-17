@@ -28,7 +28,7 @@
  */
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2026.8.14";
+const CARD_VERSION = "2026.8.18";
 
 /* ------------------------------------------------------------------ config */
 
@@ -100,6 +100,31 @@ const MODES = Object.freeze({
   heat_cool: { label: "AUTO", key: "auto" },
 });
 
+/**
+ * Displayed word per `fan_mode`. Integrations spell the same speed differently,
+ * so the label is normalised through the same vocabulary SPEED_MAP already uses
+ * for the spin — `medium` and `mid` are one speed, and they read as one word.
+ * Anything unlisted falls through as the integration's own value, upper-cased,
+ * so a unit with its own names still shows what it actually reports.
+ */
+const FAN_LABELS = Object.freeze({
+  silent: "SILENT",
+  quiet: "QUIET",
+  low: "LOW",
+  medium: "MID",
+  mid: "MID",
+  middle: "MID",
+  high: "HIGH",
+  strong: "STRONG",
+  full: "FULL",
+  max: "MAX",
+  turbo: "TURBO",
+  auto: "AUTO",
+});
+
+/** `preset_mode` values that mean no special mode is running. */
+const NEUTRAL_PRESETS = new Set(["none", "off", "normal", "standard", "default"]);
+
 const FAN_ICON = "mdi:fan";
 
 /** hvac_action values that mean the unit is sitting there doing nothing. */
@@ -165,6 +190,8 @@ class AcControlCard extends HTMLElement {
     /** Per-target-entity pending value, so rapid presses accumulate without
      *  ever being *displayed* before HA confirms them. */
     this._pending = new Map();
+    /** Width watcher for the compact status lines; null in the full layout. */
+    this._ro = null;
   }
 
   /* ------------------------------------------------------------- lifecycle */
@@ -276,12 +303,23 @@ class AcControlCard extends HTMLElement {
    */
   _estimatedHeightPx() {
     const n = this._rooms.length;
-    // The compact tile has no controls and no status line, so it is one fixed
-    // small height per room whatever the width.
-    if (this._compact) return 12 + 56 * n;
-    const w = this.getBoundingClientRect ? this.getBoundingClientRect().width : 0;
+    const box = this.getBoundingClientRect ? this.getBoundingClientRect() : null;
+
+    // Once the card is on screen its real height beats any formula, and above
+    // the 520px tier it is the only thing that stays right: the type, the
+    // controls and the padding all scale with the container there, so no fixed
+    // per-room number describes every width.
+    if (box && box.height > 0) return Math.ceil(box.height);
+
+    // Before first layout, fall back to the measured shape of each tier.
+    // A compact tile measures 71px on the narrow tier and 79px above it; the
+    // larger number is the safe guess, since under-estimating is what makes
+    // neighbouring cards overlap.
+    if (this._compact) return 4 + 79 * n;
+    const w = box ? box.width : 0;
+    if (w > 520) return 46 + 151 * n; // wide tier, at its cap
     if (w > 431) return 11 + 106 * n; // controls share the room's line
-    if (w && w <= 280) return 3 + 140 * n; // compact everything
+    if (w && w <= 280) return 3 + 140 * n; // everything compact
     return 7 + 155 * n; // controls on their own line
   }
 
@@ -419,8 +457,97 @@ class AcControlCard extends HTMLElement {
     return (s.attributes && s.attributes.preset_mode) === "boost";
   }
 
+  /**
+   * What the unit is doing, as words, in descending priority:
+   * MODE, FAN SPEED, SPECIAL MODE, TARGET.
+   *
+   * One list, two layouts. The full card prints `[0]` large and the rest as
+   * muted context; the compact tile joins the lot into its status line and
+   * drops from the tail when the tile is too narrow. Neither reads the climate
+   * entity for itself, so the two can never disagree about what is running.
+   *
+   * A unit that is off or unavailable returns its single mode word and nothing
+   * else — a stale fan speed next to OFF would be a lie.
+   */
+  _statusBits(room) {
+    const mode = this._mode(room);
+    const bits = [mode.label];
+    if (!mode.available || !mode.on) return bits;
+
+    const s = this._roomState(room, "climate_entity");
+    const attrs = (s && s.attributes) || {};
+
+    const fan = String(attrs.fan_mode === undefined ? "" : attrs.fan_mode).trim();
+    if (fan && !NON_VALUES.has(fan.toLowerCase())) {
+      bits.push(FAN_LABELS[fan.toLowerCase()] || fan.toUpperCase());
+    }
+
+    // Whatever preset the integration says is running. Only presets that mean
+    // "nothing special" are filtered out, so BOOST behaves exactly as before
+    // while ECO / SLEEP / TURBO on units that expose them show up too. Nothing
+    // is inferred: no preset attribute means no special mode.
+    const preset = String(attrs.preset_mode === undefined ? "" : attrs.preset_mode).trim();
+    const p = preset.toLowerCase();
+    if (preset && !NON_VALUES.has(p) && !NEUTRAL_PRESETS.has(p)) {
+      bits.push(preset.toUpperCase().replace(/[_-]+/g, " "));
+    }
+
+    // The unit's own setpoint, which is not the same number as the card's
+    // target helper: this is what the AC was actually told to hold. Skipped in
+    // fan-only, where there is nothing to hold — some integrations still report
+    // the last setpoint there, and printing it would read as a temperature the
+    // unit is working towards.
+    if (s.state !== "fan_only" && isNumeric(attrs.temperature)) {
+      bits.push(this._setpointText(Number(attrs.temperature), this._degree(room)));
+    }
+    return bits;
+  }
+
+  /**
+   * How far the room is from its target, ready for the badge.
+   *
+   * Built only from two real numbers, so it can never print NaN or unknown;
+   * `null` means one of them is missing and the badge stays hidden. The
+   * at-target wording is passed in because a tile has no room for a phrase —
+   * the arithmetic, the 0.05 dead band and the colour key are shared.
+   */
+  _delta(room, evenText) {
+    const cur = this._roomState(room, "room_temp_entity");
+    const tgt = this._roomState(room, "target_temp_entity");
+    if (!(cur && isNumeric(cur.state)) || !(tgt && isNumeric(tgt.state))) return null;
+
+    const diff = tidy(Number(cur.state) - Number(tgt.state));
+    if (Math.abs(diff) < 0.05) return { text: evenText, key: "even" };
+    return {
+      text: `${diff > 0 ? "▲" : "▼"} ${this._num(Math.abs(diff))}${this._degree(room)}`,
+      key: diff > 0 ? "above" : "below",
+    };
+  }
+
+  /**
+   * A temperature the user set, rather than one that was measured. These are
+   * usually whole numbers, so the decimal is shown only when there really is
+   * one: 19° stays 19°, and a half-step 19.5° is not rounded away to 20°.
+   */
+  _setpointText(value, deg) {
+    return `${this._num(value, Number.isInteger(value) ? 0 : 1)}${deg}`;
+  }
+
   _iconFor(room) {
     return room.icon || FAN_ICON;
+  }
+
+  /**
+   * Palette key for the fan.
+   *
+   * The heating season paints every running fan red, whatever mode the unit
+   * reports — a unit blowing warm air on `dry` or `auto` should not read as
+   * cyan or purple. A unit that is off or unavailable keeps its muted colour,
+   * since the season says nothing about a unit that is not running.
+   */
+  _iconKey(room, mode) {
+    if (!mode.available || !mode.on) return mode.key;
+    return this._isHeat(room) ? MODES.heat.key : mode.key;
   }
 
   _fanSpin(room) {
@@ -577,7 +704,12 @@ class AcControlCard extends HTMLElement {
 
   /** Minimal but correct support for HA's standard action config. */
   _cardAction(room) {
-    const cfg = this._cfg.tap_action || { action: "more-info" };
+    // The compact tile is a control in its own right -- it has no buttons, so a
+    // tap turns the unit on or off. The full card keeps opening more-info,
+    // since its own power button already does the toggling. Either default is
+    // replaced outright by an explicit `tap_action`.
+    const fallback = this._compact ? { action: "toggle" } : { action: "more-info" };
+    const cfg = this._cfg.tap_action || fallback;
     const r = room || this._rooms[0] || {};
     const fallbackEntity = r.climate_entity || r.room_temp_entity || r.target_temp_entity;
 
@@ -731,9 +863,33 @@ class AcControlCard extends HTMLElement {
 
       const cur = el("div", "ccur", "—");
       const name = el("div", "cname");
-      const target = el("div", "ctarget");
 
-      tile.append(box, cur, name, target);
+      // Badge and target share the right-hand slot so the badge sits directly
+      // before the number it is the difference from, and the room name on the
+      // left absorbs whatever width they need.
+      const right = el("div", "cright");
+      const delta = el("span", "delta");
+      delta.hidden = true;
+      const target = el("span", "ctarget");
+      right.append(delta, target);
+
+      // One flex line rather than two grid cells: the name is the only thing
+      // here that may shrink, and a grid item cannot be pushed below its
+      // min-content width -- the badge would sit on top of the name instead.
+      const info = el("div", "cinfo");
+      info.append(name, right);
+
+      // Four fixed slots, one per status bit, so trimming a line that does not
+      // fit is a matter of hiding the last few rather than rebuilding text.
+      const status = el("div", "cstatus");
+      const statusBits = [0, 1, 2, 3].map(() => {
+        const b = el("span", "cbit");
+        b.hidden = true;
+        status.appendChild(b);
+        return b;
+      });
+
+      tile.append(box, cur, info, status);
       tile.addEventListener("click", (e) => {
         e.stopPropagation();
         this._cardAction(room);
@@ -747,18 +903,62 @@ class AcControlCard extends HTMLElement {
         cur,
         name,
         target,
+        delta,
+        status,
+        statusBits,
       });
     }
 
     surface.appendChild(list);
     card.appendChild(surface);
     root.appendChild(card);
+    this._observeWidth(card);
     this._built = true;
+  }
+
+  /**
+   * Re-fit the status lines when the card changes width.
+   *
+   * Container queries handle the type size, but how much text fits is a
+   * measurement, not a breakpoint — dragging a tile one column narrower has to
+   * re-run it. Guarded because ResizeObserver is absent in some test runners.
+   */
+  _observeWidth(card) {
+    this._unobserveWidth();
+    if (typeof ResizeObserver !== "function") return;
+    this._ro = new ResizeObserver(() => this._fitAllStatus());
+    this._ro.observe(card);
+  }
+
+  _unobserveWidth() {
+    if (this._ro) {
+      this._ro.disconnect();
+      this._ro = null;
+    }
+  }
+
+  disconnectedCallback() {
+    this._unobserveWidth();
+  }
+
+  connectedCallback() {
+    if (!this._built || !this._compact) return;
+    // Re-attaching a card that was moved in the DOM must not lose its observer.
+    if (!this._ro) {
+      const card = this.shadowRoot && this.shadowRoot.querySelector("ha-card");
+      if (card) this._observeWidth(card);
+    }
+    // A card built before it was inserted measured zero and skipped its fit.
+    // Doing it here rather than waiting for the observer keeps it correct on a
+    // dashboard tab that is not visible yet, where the frame loop -- and with
+    // it every ResizeObserver callback -- is parked.
+    this._fitAllStatus();
   }
 
   _build() {
     if (this._compact) return this._buildCompact();
 
+    this._unobserveWidth();
     const root = this.shadowRoot;
     root.innerHTML = `<style>${AcControlCard.styles}</style>`;
     this.removeAttribute("data-layout");
@@ -835,17 +1035,19 @@ class AcControlCard extends HTMLElement {
   }
 
   /**
-   * Compact tile contents. Deliberately only the four things the tile shows —
+   * Compact tile contents. Deliberately only the few things the tile shows —
    * the numbers come from the same entities and the same helpers the full card
    * uses, so the two layouts can never disagree about a temperature.
    */
   _renderCompactRoom(refs, room) {
     const mode = this._mode(room);
     const deg = this._degree(room);
+    const bits = this._statusBits(room);
 
     refs.row.classList.toggle("unavailable", !mode.available);
 
-    refs.modeIcon.className = `modeicon m-${mode.key}${this._running(room) ? " running" : ""}`;
+    refs.modeIcon.className =
+      `modeicon m-${this._iconKey(room, mode)}${this._running(room) ? " running" : ""}`;
     refs.modeGlyph.setAttribute("icon", this._iconFor(room));
     refs.modeGlyph.style.animation = this._fanSpin(room);
 
@@ -855,7 +1057,14 @@ class AcControlCard extends HTMLElement {
 
     const tgt = this._roomState(room, "target_temp_entity");
     const tgtOk = !!(tgt && isNumeric(tgt.state));
-    refs.target.textContent = tgtOk ? `${this._num(Number(tgt.state), 0)}${deg}` : "—";
+    refs.target.textContent = tgtOk ? this._setpointText(Number(tgt.state), deg) : "—";
+
+    // Same badge as the full card, sitting just before the target. "at target"
+    // is spelled 0° here: the tile cannot spare the width for the phrase.
+    const delta = this._delta(room, `0${deg}`);
+    refs.delta.hidden = !delta;
+    refs.delta.textContent = delta ? delta.text : "";
+    if (delta) refs.delta.className = `delta ${delta.key}`;
 
     const name = this._roomName(room);
     if (this._cfg.show_name === false) {
@@ -866,13 +1075,68 @@ class AcControlCard extends HTMLElement {
       refs.name.textContent = name;
     }
 
+    // Live operating state. The colour follows the same palette key as the fan
+    // above it — including the heating-season override — so a tile never shows
+    // a blue word under a red fan. An off or unavailable unit gets exactly one
+    // muted word.
+    refs.status.className = `cstatus m-${this._iconKey(room, mode)}${mode.on ? "" : " muted"}`;
+    refs.statusBits.forEach((span, i) => {
+      span.textContent = bits[i] === undefined ? "" : bits[i];
+      span.hidden = i >= bits.length;
+    });
+    this._fitStatus(refs);
+
+    // Announce whatever the tap will actually do, so the label cannot drift
+    // from a configured tap_action.
+    const action = (this._cfg.tap_action && this._cfg.tap_action.action) || "toggle";
+    const says =
+      action === "toggle"
+        ? mode.on
+          ? "Turn off."
+          : "Turn on."
+        : action === "more-info"
+          ? "Opens the full controls."
+          : "";
+
+    refs.row.setAttribute("aria-pressed", String(mode.available && mode.on));
+    // Always the complete status, even when the visible line had to drop a bit
+    // to fit: a narrow tile must not also mean less for a screen reader.
     refs.row.setAttribute(
       "aria-label",
-      `${name}. ${mode.label}. ` +
+      `${name}. ${bits.join(", ")}. ` +
         `Current ${curOk ? this._num(Number(cur.state)) + deg : "unavailable"}, ` +
-        `target ${tgtOk ? this._num(Number(tgt.state), 0) + deg : "unavailable"}. ` +
-        "Opens the full controls.",
+        `target ${tgtOk ? this._setpointText(Number(tgt.state), deg) : "unavailable"}. ` +
+        says,
     );
+  }
+
+  /**
+   * Trim a status line until it fits its tile, dropping the lowest-priority
+   * bit first: TARGET, then SPECIAL MODE, then FAN SPEED. The mode word is
+   * index 0 and never goes — a tile always says what the unit is doing.
+   *
+   * Everything stays visible while it fits, which is why nothing is ever
+   * dropped at tablet or desktop widths.
+   */
+  _fitStatus(refs) {
+    const line = refs.status;
+    if (!line || !refs.statusBits) return;
+    const shown = refs.statusBits.filter((b) => b.textContent !== "");
+    shown.forEach((b) => (b.hidden = false));
+
+    // A card in a hidden pane, or one that has not been laid out yet, measures
+    // zero. Trimming against that would hide information for no reason, and the
+    // ResizeObserver re-runs this the moment it does have a width.
+    if (line.clientWidth <= 0) return;
+
+    for (let i = shown.length - 1; i > 0 && line.scrollWidth > line.clientWidth; i--) {
+      shown[i].hidden = true;
+    }
+  }
+
+  _fitAllStatus() {
+    if (!this._compact || !this._el || !this._el.rooms) return;
+    this._el.rooms.forEach((refs) => this._fitStatus(refs));
   }
 
   /**
@@ -910,29 +1174,22 @@ class AcControlCard extends HTMLElement {
   _renderRoom(refs, room) {
     const mode = this._mode(room);
     const deg = this._degree(room);
-    const climate = this._roomState(room, "climate_entity");
-    const attrs = (climate && climate.attributes) || {};
     const heat = this._isHeat(room);
 
     refs.row.classList.toggle("unavailable", !mode.available);
 
-    refs.modeIcon.className = `modeicon m-${mode.key}${this._running(room) ? " running" : ""}`;
+    refs.modeIcon.className =
+      `modeicon m-${this._iconKey(room, mode)}${this._running(room) ? " running" : ""}`;
     refs.modeGlyph.setAttribute("icon", this._iconFor(room));
     refs.modeGlyph.style.animation = this._fanSpin(room);
 
-    // Status: mode word, then the unit's own fan speed and setpoint as muted
-    // context (both carried over from v1's two-line mode text).
-    refs.statusMain.textContent = mode.label;
+    // Status: mode word, then the unit's own fan speed, special mode and
+    // setpoint as muted context. Built by the shared helper the compact tile
+    // uses, so the two layouts always describe the unit the same way.
+    const bits = this._statusBits(room);
+    refs.statusMain.textContent = bits[0];
     refs.status.className = `status m-${mode.key}`;
-    const bits = [];
-    if (mode.available && mode.on) {
-      if (attrs.fan_mode) bits.push(String(attrs.fan_mode).toUpperCase());
-      if (attrs.preset_mode === "boost") bits.push("BOOST");
-      if (Number.isFinite(Number(attrs.temperature))) {
-        bits.push(`${this._num(Number(attrs.temperature), 0)}${deg}`);
-      }
-    }
-    refs.statusSub.textContent = bits.length ? ` · ${bits.join(" · ")}` : "";
+    refs.statusSub.textContent = bits.length > 1 ? ` · ${bits.slice(1).join(" · ")}` : "";
 
     if (this._cfg.show_name === false) {
       refs.name.hidden = true;
@@ -962,19 +1219,13 @@ class AcControlCard extends HTMLElement {
       this._pending.delete(room.target_temp_entity);
     }
 
-    // Difference badge. Only ever rendered from two real numbers, so it can
-    // never print NaN / unknown.
+    // Difference badge, from the same helper the compact tile uses.
     const d = refs.delta;
-    if (curOk && tgtOk) {
-      const diff = tidy(Number(cur.state) - Number(tgt.state));
+    const delta = this._delta(room, "at target");
+    if (delta) {
       d.hidden = false;
-      if (Math.abs(diff) < 0.05) {
-        d.textContent = "at target";
-        d.className = "delta even";
-      } else {
-        d.textContent = `${diff > 0 ? "▲" : "▼"} ${this._num(Math.abs(diff))}${deg}`;
-        d.className = `delta ${diff > 0 ? "above" : "below"}`;
-      }
+      d.textContent = delta.text;
+      d.className = `delta ${delta.key}`;
     } else {
       d.hidden = true;
       d.textContent = "";
@@ -1082,12 +1333,24 @@ class AcControlCard extends HTMLElement {
         margin-bottom: var(--ac-control-card-gap, 0px);
       }
 
+      /* ha-card's own border reads theme custom properties, and on the first
+         paint after a view change those are not resolved yet: the width falls
+         back to its initial value (medium, 3px) in a near-white, and ha-card's
+         blanket 0.3s ease-out transition then fades it away. The result is a
+         white line flashing around the card every time the view is opened.
+         Restating the border here with fallbacks that cannot resolve to a
+         visible colour, and dropping the transition, removes the flash without
+         changing how the card looks once the theme has loaded — any theme that
+         sets these properties still gets exactly the border it asked for. */
       ha-card {
         container-type: inline-size;
         container-name: acc;
         overflow: hidden;
         height: 100%;
         box-sizing: border-box;
+        border-width: var(--ha-card-border-width, 1px);
+        border-color: var(--ha-card-border-color, var(--divider-color, transparent));
+        transition: none;
       }
 
       .surface {
@@ -1332,13 +1595,14 @@ class AcControlCard extends HTMLElement {
         grid-template-columns: auto minmax(0, 1fr);
         grid-template-areas:
           "icon cur"
-          "name target";
+          "info info"
+          "status status";
         align-items: center;
         column-gap: 10px;
         row-gap: 2px;
         width: 100%;
         margin: 0;
-        padding: 10px 13px;
+        padding: 9px 13px;
         border: 0;
         background: none;
         border-radius: inherit;
@@ -1381,12 +1645,39 @@ class AcControlCard extends HTMLElement {
           color-mix(in srgb, #ffb74d 62%, var(--primary-text-color, #e1e1e1))
         );
       }
+      /* Room name on the left, badge and target on the right. Only the name
+         gives way when the line is too narrow -- it already ellipsises, while
+         a clipped temperature would be a wrong number. */
+      .cinfo {
+        grid-area: info;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .cright {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex: 0 0 auto;
+      }
+      .cright > * { flex: 0 0 auto; }
+
+      /* The full card's badge, scaled to the tile. Colours come from the
+         shared .delta.above/.below/.even rules, so the two layouts agree on
+         what "warmer than target" looks like. The line-height is what holds
+         the row to the same height it had before the badge existed. */
+      .ctile .delta {
+        font-size: 10px;
+        padding: 0 5px;
+        line-height: 1.45;
+      }
+
       .ctarget {
-        grid-area: target;
-        justify-self: end;
         font-size: 13px;
         font-weight: 600;
-        line-height: 1.15;
+        line-height: 1.2;
         white-space: nowrap;
         color: var(
           --acc-compact-target,
@@ -1395,7 +1686,7 @@ class AcControlCard extends HTMLElement {
         opacity: 0.85;
       }
       .cname {
-        grid-area: name;
+        flex: 1 1 auto;
         min-width: 0;
         font-size: 12px;
         font-weight: 600;
@@ -1406,12 +1697,55 @@ class AcControlCard extends HTMLElement {
         text-overflow: ellipsis;
       }
 
+      /* Live operating state, secondary to both temperatures: smaller, lighter
+         and dimmed, so it reads as context rather than a third number.
+
+         A min-height is what keeps a row of tiles level — an off unit prints
+         one word and a boosting one prints four, and both must occupy exactly
+         one line. Type scales gently with the tile (a hair under a third of the
+         name's growth) between a readable 9.5px floor and a 12px cap, so it
+         never starts competing with the room name. */
+      .cstatus {
+        grid-area: status;
+        min-width: 0;
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: baseline;
+        gap: 0.34em;
+        overflow: hidden;
+        white-space: nowrap;
+        font-size: clamp(9.5px, 5.1cqi, 11.5px);
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        line-height: 1.2;
+        min-height: 1.2em;
+        opacity: 0.92;
+        transition: color 0.3s ease;
+      }
+      .cbit { flex: 0 0 auto; }
+      .cbit + .cbit::before {
+        content: "·";
+        margin-right: 0.34em;
+        opacity: 0.5;
+      }
+      /* An off or unavailable unit says one quiet word and nothing more. */
+      .cstatus.muted {
+        color: var(--secondary-text-color, #8a8a8a);
+        font-weight: 600;
+        opacity: 0.75;
+      }
+
       /* Two tiles per row on a phone: shed a little size rather than wrap. */
       @container acc (max-width: 172px) {
         .ctile { padding: 9px 10px; column-gap: 7px; }
         .ccur { font-size: 15px; }
         .ctarget { font-size: 12px; }
         .cname { font-size: 11px; }
+        .cinfo { gap: 6px; }
+        .cright { gap: 4px; }
+        .ctile .delta { font-size: 9px; padding: 0 4px; }
+        .cstatus { letter-spacing: 0.02em; gap: 0.28em; }
+        .cbit + .cbit::before { margin-right: 0.28em; }
         .ctile .modeicon { width: 22px; height: 22px; }
         .ctile .modeicon ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
       }
@@ -1496,6 +1830,194 @@ class AcControlCard extends HTMLElement {
           border-radius: 10px; padding: 0;
         }
         .ctl.boost ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; }
+      }
+
+      /* ============================================== wide containers (full) */
+      /* Home Assistant hands the card whatever its column allows — a widened
+         sections view or a wall tablet can be 650-800px, where the old layout
+         put every extra pixel into the text column and left the controls the
+         same size they are on a phone.
+
+         Everything below is clamp(base, N cqi, cap), where N is picked so the
+         value equals its old base exactly at the 470px entry point. That means
+         no jump at the boundary: sizes grow smoothly with the container from
+         there and stop at a deliberate cap, so a very wide card gets a roomier
+         card rather than a cartoonish one. The cqi unit is the container's own
+         inline size, so this responds to the space the card is given, never to
+         the viewport. Compact is excluded -- it stays small by design. */
+      @container acc (min-width: 470px) {
+        .surface:not(.compact) { padding: clamp(14px, 2.7cqi, 22px) clamp(16px, 3.1cqi, 26px); }
+
+        .surface:not(.compact) .roomrow {
+          column-gap: clamp(12px, 2.3cqi, 22px);
+          padding: clamp(11px, 2.1cqi, 18px) 0;
+        }
+        /* Spread the temperature away from its target instead of leaving one
+           dead gap between the text block and the controls. */
+        .surface:not(.compact) .roomtext { column-gap: clamp(10px, 2cqi, 30px); }
+
+        .surface:not(.compact) .big { font-size: clamp(24px, 5.06cqi, 35px); }
+        .surface:not(.compact) .name { font-size: clamp(12px, 2.53cqi, 15px); }
+        .surface:not(.compact) .targetline { font-size: clamp(15px, 3.19cqi, 20px); }
+        .surface:not(.compact) .delta { font-size: clamp(12px, 2.53cqi, 15px); }
+        .surface:not(.compact) .status { font-size: clamp(11px, 2.31cqi, 14px); }
+
+        /* Touch targets grow with the card. */
+        .surface:not(.compact) .controls {
+          gap: clamp(7px, 1.35cqi, 14px);
+          grid-auto-columns: minmax(clamp(44px, 9.31cqi, 70px), auto);
+        }
+        .surface:not(.compact) .ctl {
+          min-width: clamp(44px, 9.31cqi, 70px);
+          min-height: clamp(40px, 8.47cqi, 62px);
+          font-size: clamp(12px, 2.53cqi, 15px);
+          border-radius: clamp(12px, 2.3cqi, 16px);
+        }
+        .surface:not(.compact) .ctl ha-icon {
+          --mdc-icon-size: clamp(20px, 4.24cqi, 29px);
+          width: clamp(20px, 4.24cqi, 29px);
+          height: clamp(20px, 4.24cqi, 29px);
+        }
+
+        /* The fan and the boost square below it must stay identical at every
+           width, so both take the same expression. */
+        .surface:not(.compact) .statuscol { gap: clamp(5px, 0.96cqi, 9px); }
+        .surface:not(.compact) .modeicon,
+        .surface:not(.compact) .ctl.boost {
+          width: clamp(38px, 8.03cqi, 57px);
+          height: clamp(38px, 8.03cqi, 57px);
+          min-width: clamp(38px, 8.03cqi, 57px);
+          min-height: clamp(38px, 8.03cqi, 57px);
+          border-radius: clamp(12px, 2.3cqi, 16px);
+        }
+        .surface:not(.compact) .modeicon ha-icon,
+        .surface:not(.compact) .ctl.boost ha-icon {
+          --mdc-icon-size: clamp(22px, 4.65cqi, 33px);
+          width: clamp(22px, 4.65cqi, 33px);
+          height: clamp(22px, 4.65cqi, 33px);
+        }
+      }
+
+      /* Past the point where the controls stop growing, more width would only
+         stretch the gap between the text block and the controls into a void.
+         Cap the content and centre it instead, so a very wide card reads as
+         deliberate rather than sparse. Below this the card still fills its
+         container completely, which covers every realistic dashboard column. */
+      @container acc (min-width: 880px) {
+        .surface:not(.compact) .rooms {
+          max-width: 820px;
+          margin-inline: auto;
+        }
+      }
+
+      /* From the width where the controls sit beside the text, stack them two
+         by two: minus and plus on top, power and AUTO beneath. The DOM is
+         already in that order, so only the flow changes.
+
+         Two columns instead of four roughly doubles the width each button can
+         have, and the block ends up narrower overall than the old single row —
+         the space it gives back goes to the temperatures. Last in the sheet on
+         purpose: it has to win over the wide tier's four-across sizing. */
+      @container acc (min-width: 431px) {
+        .surface:not(.compact) .controls {
+          grid-auto-flow: row;
+          grid-template-columns: repeat(2, clamp(62px, 13cqi, 96px));
+          justify-content: end;
+          align-content: center;
+        }
+        /* The column owns the width now, so the button simply fills it. Only
+           the ones in this block: the boost square keeps its own geometry,
+           which is tied to the fan icon above it. */
+        .surface:not(.compact) .controls .ctl {
+          min-width: 0;
+          width: 100%;
+          min-height: clamp(48px, 10cqi, 76px);
+        }
+
+        /* Stacking the buttons made the right-hand block the tallest thing in
+           the row and left the fan column short. The left column is built from
+           the same two numbers the control block uses, so the two sides come
+           out level at every width with no dead space beside the fan.
+
+           The fan and the boost square sit further apart than the buttons do,
+           and pay for it out of their own size: widen the gap by X and each
+           square loses X/2, so two squares plus their gap still equals two
+           buttons plus theirs. The column height -- and with it the row and the
+           card -- is unchanged whatever X is set to. */
+        .surface:not(.compact) .roomrow {
+          --acc-stack-size: clamp(48px, 10cqi, 76px);
+          --acc-stack-gap: clamp(7px, 1.35cqi, 14px);
+          /* Caps at the same container width the square does (760px), so the
+             whole left column stops growing in one step rather than two. */
+          --acc-fan-extra: clamp(5px, 1cqi, 7.6px);
+          --acc-fan-size: calc(var(--acc-stack-size) - var(--acc-fan-extra) / 2);
+        }
+        .surface:not(.compact) .statuscol {
+          gap: calc(var(--acc-stack-gap) + var(--acc-fan-extra));
+        }
+        .surface:not(.compact) .modeicon,
+        .surface:not(.compact) .ctl.boost {
+          width: var(--acc-fan-size);
+          height: var(--acc-fan-size);
+          min-width: var(--acc-fan-size);
+          min-height: var(--acc-fan-size);
+        }
+        /* The glyph keeps its share of the square it sits in. */
+        .surface:not(.compact) .modeicon ha-icon,
+        .surface:not(.compact) .ctl.boost ha-icon {
+          --mdc-icon-size: clamp(28px, 5.8cqi, 44px);
+          width: clamp(28px, 5.8cqi, 44px);
+          height: clamp(28px, 5.8cqi, 44px);
+        }
+
+        /* The text grows with them, so the middle column does not read as
+           small print between two larger blocks. */
+        .surface:not(.compact) .big { font-size: clamp(26px, 5.8cqi, 40px); }
+        .surface:not(.compact) .name { font-size: clamp(13px, 2.9cqi, 17px); }
+
+        /* Target above, difference beneath it, instead of the two side by
+           side. Stacking costs a line but buys the width back, so both can be
+           set larger and still sit clear of the temperature beside them.
+           .roomtext aligns on the baseline, so "Target ..." stays level with
+           the big number and the badge hangs below it. */
+        .surface:not(.compact) .targetline {
+          flex-direction: column;
+          align-items: center;
+          gap: clamp(3px, 0.6cqi, 6px);
+          font-size: clamp(18px, 4.2cqi, 26px);
+        }
+        .surface:not(.compact) .delta { font-size: clamp(15px, 3.4cqi, 20px); }
+
+        /* The live operating state, 20% up from clamp(12px, 2.65cqi, 16px). */
+        .surface:not(.compact) .status { font-size: clamp(14.4px, 3.18cqi, 19.2px); }
+
+        /* A unit that is off has one word to say, so it says it at twice the
+           size. Only the off state: a running unit's line is four items and
+           UNAVAILABLE is a long word, and neither would survive the doubling.
+
+           The line box stays the height of a normal status line -- 0.6 of a
+           font that is twice as big is the same box -- so the word grows
+           without the row growing with it, and the card keeps the height it
+           had. That means the glyphs sit slightly proud of their line box,
+           which is why overflow goes back to visible: the hidden default here
+           is for ellipsising a long running status, and it would clip the top
+           and bottom off this one. */
+        .surface:not(.compact) .status.m-off {
+          font-size: clamp(28.8px, 6.36cqi, 38.4px);
+          line-height: 0.6;
+          overflow: visible;
+          /* Sits a touch high in its own line box. A transform rather than a
+             margin so the row keeps the height it was measured at.
+
+             The lift tapers with the card. Up to a 560px card it is 10px,
+             which puts the middle of the word on the middle of the boost
+             square beside it -- measured from the glyph ink, not the line box,
+             because a 0.6 line-height leaves the two far apart. From there it
+             eases to 4px by 640px and stays there: on a wide card the fan
+             column is tall enough that the word already reads level with it,
+             and more lift would only pull it towards the target line. */
+          transform: translateY(clamp(-10px, calc(7.5cqi - 52px), -4px));
+        }
       }
 
       /* Safety net for engines without container queries. */

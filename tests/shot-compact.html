@@ -59,11 +59,14 @@
   installStubs();
 
   // A varied snapshot: two cooling (one in boost), one off, one unavailable.
+  // `target` is the card's own target helper; `set` is what the unit itself is
+  // holding, and they are deliberately different so the screenshot shows that
+  // the status line's temperature is the AC's setpoint, not the row above it.
   // All ids are demo ids.
   const ROOMS = [
-    { key: "kitchen",     name: "Kitchen",     cur: 22.4, target: 17, state: "cool", fan: "high",   action: "cooling", preset: "boost" },
-    { key: "study",       name: "Study",       cur: 20.7, target: 19, state: "cool", fan: "low",    action: "cooling", preset: "none" },
-    { key: "bedroom",     name: "Bedroom",     cur: 24.1, target: 20, state: "off",  fan: "low",    action: null,      preset: "none" },
+    { key: "kitchen",     name: "Kitchen",     cur: 22.4, target: 20, set: 17, state: "cool", fan: "high",   action: "cooling", preset: "boost" },
+    { key: "study",       name: "Study",       cur: 20.7, target: 19, set: 22, state: "cool", fan: "low",    action: "cooling", preset: "none" },
+    { key: "bedroom",     name: "Bedroom",     cur: 24.1, target: 20, set: 20, state: "off",  fan: "low",    action: null,      preset: "none" },
     { key: "living_room", name: "Living Room", cur: 19.8, target: 21, state: "unavailable" },
   ];
 
@@ -81,7 +84,7 @@
     s[`climate.demo_${r.key}_ac`] = off
       ? { state: "unavailable", attributes: {} }
       : climate(r.state, { friendly_name: r.name, fan_mode: r.fan, preset_mode: r.preset,
-          hvac_action: r.action, temperature: r.target });
+          hvac_action: r.action, temperature: r.set });
     s[`sensor.demo_${r.key}_temperature`] = off ? sensor("unavailable") : sensor(r.cur);
     s[`input_number.demo_${r.key}_target`] = number(r.target);
     s[`automation.demo_${r.key}_ac_command`] = toggle("on");

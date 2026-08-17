@@ -4,6 +4,57 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18
+
+### Added
+
+- **A live status line on the compact tile.** `COOL · HIGH · BOOST · 17°`, built in
+  priority order — mode, fan speed, special mode, target — from the climate
+  entity's own `state`, `fan_mode`, `preset_mode` and `temperature`. It fits itself
+  to the tile: when the width will not take the whole line it drops the target
+  first, then the special mode, then the fan speed, so the mode word is the last
+  thing standing. Nothing is ever trimmed while it fits, which is why tablet and
+  desktop tiles always show all of it. Measured rather than guessed at, and re-fit
+  whenever the tile changes width.
+- **The difference badge on the compact tile**, immediately before the target, from
+  the same helper the full card uses. `0°` stands in for the full card's
+  `at target`, which is too long for a tile.
+- Fan-speed labels are normalised the way the spin speed already was, so `medium`
+  and `mid` both read `MID`, and any preset the unit reports is shown rather than
+  boost alone — `ECO`, `SLEEP` and the rest.
+
+### Changed
+
+- **The four controls stack two-by-two** once they sit beside the room text —
+  minus and plus above, power and AUTO below. Each button gains roughly 65% in
+  area, and the block ends up 80–115px narrower than the old single row, which
+  goes back to the temperatures.
+- **The fan column now fills the row.** Its two squares are built from the same
+  expression as the control block — two squares and a gap equal two buttons and
+  theirs — so both sides come out exactly level at every width. The squares sit a
+  little further apart than the buttons and pay for it out of their own size, so
+  widening that gap cannot change the row height.
+- The text scales with them: room temperature up to 40px, target 26px, status 19px,
+  all capped so a very wide card does not keep growing.
+- **Target and difference stack**, badge centred beneath the phrase, which let both
+  be set larger without costing a pixel of height.
+- A unit that is off says `OFF` at twice the status size. The line box is left at
+  the normal height, so the bigger word does not make the card any taller.
+- The compact tile's target keeps a decimal only when it has one — `19.5°` is no
+  longer rounded to `20°`.
+- Tapping a compact tile toggles the unit; it used to open the more-info dialog.
+  Set `tap_action` to get the old behaviour back.
+
+### Fixed
+
+- **A white line flashed around the card on every view change.** `ha-card` animates
+  its border, and before the theme's custom properties resolve the width falls back
+  to its initial value — `medium`, 3px — in a near-white. The border is now
+  restated with fallbacks that cannot resolve to a visible colour, and the blanket
+  transition is off. A theme that sets a border still gets exactly the border it
+  asked for.
+- The fan-only mode no longer prints a setpoint it is not holding.
+
 ## 2026.8.14
 
 ### Fixed
