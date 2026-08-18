@@ -62,7 +62,7 @@ function installFont() {
 installFont();
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2026.8.18.4";
+const CARD_VERSION = "2026.8.18.5";
 
 /* ------------------------------------------------------------------ config */
 
@@ -2257,8 +2257,13 @@ class AcControlCard extends HTMLElement {
          Beside a short first status line the badge needs about 218px, so it
          fits from the narrowest supported width up.
 
-         A single-room card keeps the badge under the target, where it was. */
-      .rooms .roomtext {
+         Every card is built this way now, whatever its room count. */
+      /* Qualified with .surface:not(.compact) so this outranks the wide tier's
+         own .roomtext rule at (0,3,0), which sets a wider column-gap. Scoped
+         to .rooms alone this lost that fight and quietly widened the gap on
+         a stacked card -- 8px to 10px at 488px, 16 to 28 at 1400 -- taking
+         the width out of the status column. */
+      .surface:not(.compact) .rooms .roomtext {
         grid-template-columns: minmax(0, 1fr) auto;
         grid-template-areas:
           "name   name"
@@ -2282,7 +2287,10 @@ class AcControlCard extends HTMLElement {
       /* The badge shares the status row now, so lifting the status alone would
          put the two out of line. Written to out-specify the lift itself, which
          is the .surface:not(.compact) .status:not(.m-off) rule, which would
-         otherwise win and drag the text back over the temperature. */
+         otherwise win and drag the text back over the temperature. The
+         .roomtext in the selector is what carries it past that rule on
+         specificity rather than on source order -- without it the two tie,
+         and moving either block in the file brings the old lift back. */
       /* How far the whole status block drops to sit against the rocket square
          beside it, rather than tucked under the temperature. Measured, per
          width, as the gap between the centre of a running unit's two text
@@ -2301,8 +2309,8 @@ class AcControlCard extends HTMLElement {
          the extra that OFF adds on top: that is the same offset between the two
          that the card has always had, and the badge sits beside the word rather
          than on its centre line. */
-      .surface:not(.compact) .rooms .status,
-      .surface:not(.compact) .rooms .delta {
+      .surface:not(.compact) .rooms .roomtext .status,
+      .surface:not(.compact) .rooms .roomtext .delta {
         transform: translateY(var(--acc-status-drop, 0px));
       }
       /* OFF is set at twice the size in a line box kept deliberately short, so
@@ -2325,11 +2333,11 @@ class AcControlCard extends HTMLElement {
          states, and the card ends up sitting low everywhere.
 
          A transform, not a margin, so no row changes height. */
-      .surface:not(.compact) .rooms .status.m-off {
+      .surface:not(.compact) .rooms .roomtext .status.m-off {
         transform: translateY(calc(6.9px + var(--acc-status-drop, 0px)));
       }
       @container acc (min-width: 431px) {
-        .surface:not(.compact) .rooms .status.m-off {
+        .surface:not(.compact) .rooms .roomtext .status.m-off {
           transform: translateY(
             calc(clamp(10.5px, calc(1.55cqi + 3px), 12.5px) + var(--acc-status-drop, 0px))
           );

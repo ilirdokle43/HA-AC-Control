@@ -4,6 +4,20 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18.5
+
+### Fixed
+
+- **A stacked card's text columns went back to the gap they had.** Broadening the
+  text-block rules from `.rooms.multi` to `.rooms` in 2026.8.18.4 dropped their
+  specificity from (0,3,0) to (0,2,0), which lost the `column-gap` to the wide
+  tier's own `.roomtext` rule at (0,3,0): 8px became 10px on a 488px card and
+  16px became 28px at 1400px, taking that width out of the status column. The
+  rules are qualified with `.surface:not(.compact)` again so they outrank it.
+- **The status offsets no longer depend on where they sit in the file.** They had
+  come to tie the single-room lift they are meant to override, winning only on
+  source order; the selector now carries `.roomtext` and outranks it outright.
+
 ## 2026.8.18.4
 
 Spacing and layout of a card holding a single room. A stacked card is unchanged
