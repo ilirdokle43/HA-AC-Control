@@ -1659,70 +1659,83 @@ describe("stacked rooms", () => {
 
 describe("embedded font", () => {
   const STYLE_ID = "ha-ac-control-embedded-font";
+  const FAMILY = "Choco Cooky";
 
-  it("injects nothing while no font is embedded", () => {
+  it("registers the face once for the whole document, not once per card", () => {
+    // installFont() runs at module load, and every card on the dashboard
+    // shares that one registration -- the face has to live in the document
+    // because a face declared inside a shadow tree is invisible to it.
     mount(DEMO_CONFIG, makeHass(), 520);
-    assert.notOk(
-      document.getElementById(STYLE_ID),
-      "with no font data there should be no style node at all",
-    );
+    mount(DEMO_CONFIG, makeHass(), 520);
+    const nodes = document.querySelectorAll("#" + STYLE_ID);
+    assert.equal(nodes.length, 1, "two cards should still leave exactly one style node");
+    assert.match(nodes[0].textContent, /@font-face/, "the style node should declare a face");
+    assert.match(nodes[0].textContent, /Choco Cooky/, "the face should be the embedded family");
   });
 
-  it("leaves every text element inheriting until a font is embedded", () => {
+  it("carries the font itself, making no network request for it", () => {
+    const css = document.getElementById(STYLE_ID).textContent;
+    assert.match(css, /src:url\(data:font\/woff2;base64,/, "the source should be inline Base64 WOFF2");
+    const b64 = css.match(/base64,([A-Za-z0-9+/=]+)\)/)[1];
+    assert.ok(b64.length > 10000, `payload is only ${b64.length} chars -- that is not a real font`);
+    // wOF2 -- the WOFF2 signature, so the bytes are the format we claim.
+    assert.equal(atob(b64.slice(0, 8)).slice(0, 4), "wOF2", "the payload should be a WOFF2 file");
+  });
+
+  it("actually loads the face the card asks for", async () => {
+    await document.fonts.load(`16px "${FAMILY}"`);
+    assert.ok(document.fonts.check(`16px "${FAMILY}"`), "the embedded face should be usable");
+  });
+
+  it("puts the font on every element the card draws text with", () => {
     const m = mount(DEMO_CONFIG, makeHass(), 520);
     for (const sel of [".name", ".big.cur", ".target", ".delta", ".status", ".ctl"]) {
       const el = m.q(sel);
       assert.ok(el, sel + " should exist");
-      // --acc-font is unset, so the declaration resolves to inherit and the
-      // family is whatever the dashboard uses -- not a hard-coded stack.
-      assert.equal(
+      assert.match(
         getComputedStyle(el).fontFamily,
-        getComputedStyle(m.card).fontFamily,
-        sel + " should still inherit the page font",
+        /Choco Cooky/,
+        sel + " should draw in the embedded font",
       );
     }
   });
 
-  it("registers the face once for the whole document, not once per card", () => {
-    // Stand in for the embedded data: the registration path is what matters,
-    // and it is identical whatever bytes are in the URL.
-    const inject = () => {
-      if (document.getElementById(STYLE_ID)) return;
-      const style = document.createElement("style");
-      style.id = STYLE_ID;
-      style.textContent =
-        "@font-face{font-family:'Choco Cooky';src:url(data:font/woff2;base64,AAAA) format('woff2')}" +
-        "ac-control-card{--acc-font:'Choco Cooky';}";
-      document.head.appendChild(style);
-    };
-    try {
-      for (let i = 0; i < 5; i++) inject();
-      assert.equal(
-        document.querySelectorAll("#" + STYLE_ID).length,
-        1,
-        "five registrations should leave exactly one style node",
-      );
-
-      // And the property crosses the shadow boundary onto the card's text.
-      const m = mount(DEMO_CONFIG, makeHass(), 520);
-      assert.match(getComputedStyle(m.q(".name")).fontFamily, /Choco Cooky/);
-      assert.match(getComputedStyle(m.q(".status")).fontFamily, /Choco Cooky/);
-      // Icons must not be dragged into it.
-      const icon = m.q(".modeicon ha-icon");
-      assert.notOk(
-        /Choco Cooky/.test(getComputedStyle(icon).fontFamily),
-        "an icon element must not take the text font",
-      );
-    } finally {
-      const node = document.getElementById(STYLE_ID);
-      if (node) node.remove();
+  it("puts it on the compact tile's text too", () => {
+    const m = mount({ ...DEMO_CONFIG, layout: "compact" }, makeHass(), 300);
+    for (const sel of [".cname", ".ccur", ".cstatus"]) {
+      const el = m.q(sel);
+      if (!el) continue;
+      assert.match(getComputedStyle(el).fontFamily, /Choco Cooky/, sel + " should draw in the font");
     }
+  });
+
+  it("reaches text the card gains later, without a rule naming it", () => {
+    // The font is set at :host and inherits, so anything rendered from here on
+    // picks it up -- that is the whole point of not listing class names.
+    const m = mount(DEMO_CONFIG, makeHass(), 520);
+    const probe = document.createElement("span");
+    probe.textContent = "new text";
+    m.q(".name").parentNode.appendChild(probe);
+    assert.match(
+      getComputedStyle(probe).fontFamily,
+      /Choco Cooky/,
+      "an element added later should inherit the font",
+    );
+  });
+
+  it("keeps icons out of it", () => {
+    const m = mount(DEMO_CONFIG, makeHass(), 520);
+    const icon = m.q(".modeicon ha-icon");
+    assert.notOk(
+      /Choco Cooky/.test(getComputedStyle(icon).fontFamily),
+      "an icon element must not take the text font",
+    );
   });
 
   it("ships with the markers the build script writes between", () => {
     const src = AcControlCard.styles;
     assert.ok(typeof src === "string", "styles should be a string");
-    assert.ok(src.includes("var(--acc-font, inherit)"), "text elements read the font variable");
+    assert.ok(src.includes("var(--acc-font, inherit)"), "text reads the font variable");
   });
 });
 
@@ -2045,6 +2058,13 @@ describe("stacked controls", () => {
         hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
       });
       const m = mount(oneRoom(), makeHass(s), w);
+      // Measured without the embedded font, which is the geometry these
+      // figures were fitted against -- and the only one this harness can
+      // speak to. A card mounted in a bare div puts the rocket square about
+      // eleven pixels lower relative to the text than a dashboard does, so
+      // the absolute number here is this page's, not the dashboard's. What
+      // the font does to it is checked separately, just below.
+      m.card.style.removeProperty("--acc-font");
       await frame();
       const one = inkRect(m.q(".statusline.one"));
       const two = inkRect(m.q(".statusline.two"));
@@ -2054,6 +2074,41 @@ describe("stacked controls", () => {
       // between a bare page and this one, so the check is that it sits with
       // the square rather than a line below it. It used to be a full line adrift.
       assert.ok(Math.abs(off) <= 10, `status is ${off.toFixed(1)}px off the boost centre at ${w}px`);
+    }
+  });
+
+  it("keeps it there when the embedded font is what draws the text", async () => {
+    // The status block is the one thing on the card centred against something
+    // that is not text, so a font whose ink sits differently in its line box
+    // moves it against the rocket square while nothing else notices. Swept on
+    // the live dashboard from 440 to 700px, Choco Cooky moves it by 1 to 2px
+    // and the block stays 4.5-6.6px from the square's centre. This is the
+    // delta, not the absolute, so it holds regardless of this page's own
+    // eleven-pixel offset -- and it is what would regress if the font were
+    // swapped for one with different vertical metrics.
+    if (document.fonts) await document.fonts.ready;
+    for (const w of [500, 560, 620]) {
+      const s = demoStates();
+      s["climate.demo_bedroom_ac"] = climate("cool", {
+        hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
+      });
+      const m = mount(oneRoom(), makeHass(s), w);
+      const read = () => {
+        const one = inkRect(m.q(".statusline.one"));
+        const two = inkRect(m.q(".statusline.two"));
+        const boost = m.refs(0).boost.getBoundingClientRect();
+        return (one.top + two.bottom) / 2 - (boost.top + boost.height / 2);
+      };
+      m.card.style.removeProperty("--acc-font");
+      await frame();
+      const without = read();
+      m.card.style.setProperty("--acc-font", "'Choco Cooky'");
+      await frame();
+      const shift = read() - without;
+      assert.ok(
+        Math.abs(shift) <= 8,
+        `the font moved the status block ${shift.toFixed(1)}px at ${w}px`,
+      );
     }
   });
 
@@ -2590,6 +2645,12 @@ describe("editor", () => {
 export async function run(report) {
   let pass = 0;
   let failed = 0;
+  // The embedded face loads with font-display:swap, so the card lays out in
+  // the fallback first and again when the face arrives. Any test that measures
+  // glyph ink against a box would otherwise be racing that second layout --
+  // which is exactly how a font-metric difference of half a pixel was once
+  // measured as five and a half.
+  if (typeof document !== "undefined" && document.fonts) await document.fonts.ready;
   for (const suite of suites) {
     report.suite(suite.name);
     for (const t of suite.tests) {

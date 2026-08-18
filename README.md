@@ -252,6 +252,27 @@ Colours come from your theme where possible, and can be overridden per-card with
 | `--acc-compact-target` | amber | Target temperature on the compact tile, same blending |
 | `--acc-compact-radius` | `22px` | Corner radius of the compact tile |
 
+## Typeface
+
+The card draws its own text in **Choco Cooky**, carried inside the JavaScript
+file as a Base64 WOFF2 — so it renders the same on every device and makes no
+network request for it. The face is subset to Latin-1, Latin Extended-A,
+punctuation and the degree and arrow symbols the card uses: 383 glyphs, about
+36 KB. Text outside those ranges falls back to your dashboard's own font.
+
+Only the card's text is affected. Icons are left on the theme's own font, and
+nothing outside the card changes.
+
+To use your dashboard's font instead, set `--acc-font` back to `inherit` with
+`card_mod`. The `!important` is needed: the card sets the property inline on
+itself, so a plain rule loses to it.
+
+```yaml
+card_mod:
+  style: |
+    :host { --acc-font: inherit !important; }
+```
+
 ## Troubleshooting
 
 **The card looks unchanged after updating.** Browsers cache Lovelace resources for

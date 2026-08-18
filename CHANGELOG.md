@@ -4,6 +4,59 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18.9
+
+### Added
+
+- **The card carries its own font.** Choco Cooky is embedded as Base64 WOFF2 and
+  registered once for the document, so every card on a dashboard shares one face
+  and none of them makes a network request for it. The family is applied at the
+  card's host and reaches its text by inheritance, which means text the card
+  gains later picks it up without a rule having to name it. Icons are left out
+  deliberately.
+- The font is **subset to Latin-1, Latin Extended-A, punctuation and the degree
+  and arrow symbols** the card draws — 383 glyphs of the original 16,597, which
+  are overwhelmingly Hangul. That is 36 KB embedded rather than 819 KB, and it
+  adds 48 KB to the card. Text outside those ranges falls back to the dashboard
+  font as before.
+
+  Two things about wiring a font into a card that are easy to get wrong, and
+  cost a broken deploy each here:
+
+  - The family has to be handed over as an **inline property on the element**,
+    not by an `ac-control-card{--acc-font:…}` rule in the document stylesheet.
+    On a dashboard the card sits several shadow roots deep inside
+    `hui-view`/`hui-card`, where a document rule never matches it — the property
+    came out empty and the card kept the dashboard font. A card appended
+    straight to the document *does* match that rule, so a test harness renders
+    correctly throughout and only the live dashboard shows the fault. The
+    `@font-face` itself stays in the document, since faces are global and one
+    declared inside a shadow tree would be invisible to it.
+  - It has to be set from `connectedCallback`, **not the constructor**. A custom
+    element constructor may not give itself an attribute, and an inline style is
+    one; doing it there makes every card on the dashboard fail to construct and
+    render as a red configuration error.
+
+### Fixed
+
+- **The test suite waits for the embedded face before measuring glyph ink.** It
+  loads with `font-display:swap`, so the card lays out in the fallback first and
+  again when the face arrives, and any test comparing ink against a box was
+  racing that second layout.
+
+### Notes
+
+- The status block is the one thing on the card centred against something that
+  is not text, so it is the only part a change of font could move. Swept on the
+  live dashboard from 440 to 700px, Choco Cooky moves it by 1 to 2px and it
+  stays 4.5–6.6px from the rocket square's centre — so none of the width-fitted
+  figures needed changing. A first attempt to correct a 5.5px shift was measured
+  in the test harness instead, where a card in a bare container puts the square
+  about eleven pixels lower relative to the text than a dashboard does; the
+  shift was an artefact of that, and correcting for it made the live card worse.
+  The suite now checks what the font *does* to the block rather than where the
+  block lands, since only the delta means anything off a dashboard.
+
 ## 2026.8.18.5
 
 ### Fixed
