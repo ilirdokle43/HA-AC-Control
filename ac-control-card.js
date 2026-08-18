@@ -28,7 +28,7 @@
  */
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2026.8.18";
+const CARD_VERSION = "2026.8.18.1";
 
 /* ------------------------------------------------------------------ config */
 
@@ -691,6 +691,37 @@ class AcControlCard extends HTMLElement {
     return s && isNumeric(s.state) ? Number(s.state) : NaN;
   }
 
+  /** What a tap on the card body will do, for the row's aria-label. */
+  _tapSays(mode) {
+    const action = (this._cfg.tap_action && this._cfg.tap_action.action) || "toggle";
+    if (action === "toggle") return mode.on ? "Turn off." : "Turn on.";
+    if (action === "more-info") return "Opens the full controls.";
+    return "";
+  }
+
+  /**
+   * Which room a click landed on.
+   *
+   * The event path is walked rather than `target`, because the click may have
+   * landed on a nested element inside the row -- or inside the shadow tree,
+   * where `target` is retargeted to the host.
+   *
+   * A click on the card's own padding, outside any row, still counts for a
+   * single-room card: there is only one unit it could mean. On a multi-room
+   * card it is ignored, since guessing would toggle the wrong room.
+   */
+  _roomFromEvent(ev) {
+    const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
+    const row = path.find(
+      (n) => n && n.classList && n.classList.contains("roomrow"),
+    );
+    if (row) {
+      const i = this._el.rooms.findIndex((r) => r.row === row);
+      if (i !== -1) return this._rooms[i];
+    }
+    return this._multi ? null : this._rooms[0];
+  }
+
   _fireMoreInfo(entityId) {
     if (!entityId) return;
     this.dispatchEvent(
@@ -704,11 +735,11 @@ class AcControlCard extends HTMLElement {
 
   /** Minimal but correct support for HA's standard action config. */
   _cardAction(room) {
-    // The compact tile is a control in its own right -- it has no buttons, so a
-    // tap turns the unit on or off. The full card keeps opening more-info,
-    // since its own power button already does the toggling. Either default is
-    // replaced outright by an explicit `tap_action`.
-    const fallback = this._compact ? { action: "toggle" } : { action: "more-info" };
+    // A tap anywhere that is not a button turns the unit on or off, in both
+    // layouts. On the full card that is every part of a room row except boost,
+    // minus, plus, power and AUTO, each of which stops the event itself.
+    // Replaced outright by an explicit `tap_action`.
+    const fallback = { action: "toggle" };
     const cfg = this._cfg.tap_action || fallback;
     const r = room || this._rooms[0] || {};
     const fallbackEntity = r.climate_entity || r.room_temp_entity || r.target_temp_entity;
@@ -965,8 +996,6 @@ class AcControlCard extends HTMLElement {
 
     const card = document.createElement("ha-card");
     const surface = el("div", "surface");
-    surface.setAttribute("role", "button");
-    surface.tabIndex = 0;
 
     const notice = el("div", "notice");
     notice.hidden = true;
@@ -977,6 +1006,18 @@ class AcControlCard extends HTMLElement {
     const list = el("div", "rooms");
     for (const room of this._rooms) {
       const row = el("div", "roomrow");
+      // Each row is its own control: a tap anywhere on it that is not one of
+      // the buttons toggles that room's unit. The buttons all stop
+      // propagation, so they never reach this.
+      row.setAttribute("role", "button");
+      row.tabIndex = 0;
+      row.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          this._cardAction(room);
+        }
+      });
       const status = this._buildStatusCol(room);
       const t = this._buildRoomText();
       const c = this._buildControls(room);
@@ -1003,12 +1044,9 @@ class AcControlCard extends HTMLElement {
     }
     surface.appendChild(list);
 
-    surface.addEventListener("click", () => this._cardAction(this._rooms[0]));
-    surface.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        this._cardAction(this._rooms[0]);
-      }
+    surface.addEventListener("click", (e) => {
+      const room = this._roomFromEvent(e);
+      if (room) this._cardAction(room);
     });
 
     card.appendChild(surface);
@@ -1088,15 +1126,7 @@ class AcControlCard extends HTMLElement {
 
     // Announce whatever the tap will actually do, so the label cannot drift
     // from a configured tap_action.
-    const action = (this._cfg.tap_action && this._cfg.tap_action.action) || "toggle";
-    const says =
-      action === "toggle"
-        ? mode.on
-          ? "Turn off."
-          : "Turn on."
-        : action === "more-info"
-          ? "Opens the full controls."
-          : "";
+    const says = this._tapSays(mode);
 
     refs.row.setAttribute("aria-pressed", String(mode.available && mode.on));
     // Always the complete status, even when the visible line had to drop a bit
@@ -1231,11 +1261,13 @@ class AcControlCard extends HTMLElement {
       d.textContent = "";
     }
 
+    refs.row.setAttribute("aria-pressed", String(mode.available && mode.on));
     refs.row.setAttribute(
       "aria-label",
       `${this._roomName(room)}. ${mode.label}. ` +
         `Current ${curOk ? this._num(Number(cur.state)) + deg : "unavailable"}, ` +
-        `target ${tgtOk ? this._num(Number(tgt.state)) + deg : "unavailable"}.`,
+        `target ${tgtOk ? this._num(Number(tgt.state)) + deg : "unavailable"}. ` +
+        this._tapSays(mode),
     );
   }
 
@@ -1360,9 +1392,10 @@ class AcControlCard extends HTMLElement {
         cursor: pointer;
         outline: none;
       }
-      .surface:focus-visible {
+      .roomrow:focus-visible {
+        outline: none;
         box-shadow: inset 0 0 0 2px var(--primary-color, #03a9f4);
-        border-radius: var(--ha-card-border-radius, 12px);
+        border-radius: 10px;
       }
 
       .notice {
@@ -2009,14 +2042,14 @@ class AcControlCard extends HTMLElement {
           /* Sits a touch high in its own line box. A transform rather than a
              margin so the row keeps the height it was measured at.
 
-             The lift tapers with the card. Up to a 560px card it is 10px,
-             which puts the middle of the word on the middle of the boost
-             square beside it -- measured from the glyph ink, not the line box,
+             The lift tapers with the card. Up to a 560px card it is 20px,
+             which carries the word clear of the boost square and up towards
+             the target line -- measured from the glyph ink, not the line box,
              because a 0.6 line-height leaves the two far apart. From there it
              eases to 4px by 640px and stays there: on a wide card the fan
              column is tall enough that the word already reads level with it,
-             and more lift would only pull it towards the target line. */
-          transform: translateY(clamp(-10px, calc(7.5cqi - 52px), -4px));
+             and more lift would only pull it into the target line. */
+          transform: translateY(clamp(-20px, calc(20cqi - 132px), -4px));
         }
       }
 

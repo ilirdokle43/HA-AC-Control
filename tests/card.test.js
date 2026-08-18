@@ -1232,16 +1232,84 @@ describe("compact layout", () => {
     assert.equal(opened, "climate.demo_bedroom_ac", "more-info should still be configurable");
   });
 
-  it("leaves the full card opening more-info", () => {
+  it("toggles the unit when the full card body is tapped", () => {
     const hass = makeHass();
     const m = mount(oneRoom(), hass, 520);
+    m.q(".surface").click();
+    assert.equal(hass.calls.length, 1);
+    assert.equal(`${hass.calls[0].domain}.${hass.calls[0].service}`, "homeassistant.toggle");
+    assert.equal(hass.calls[0].target.entity_id, "climate.demo_bedroom_ac");
+  });
+
+  it("toggles from anywhere on a row that is not a button", () => {
+    const spots = [".roomrow", ".roomtext", ".name", ".big.cur", ".target", ".status", ".modeicon", ".statuscol"];
+    for (const sel of spots) {
+      const hass = makeHass();
+      const m = mount(oneRoom(), hass, 520);
+      const el = m.q(sel);
+      assert.ok(el, `${sel} should exist`);
+      el.click();
+      assert.equal(hass.calls.length, 1, `clicking ${sel} should toggle once`);
+      assert.equal(hass.calls[0].target.entity_id, "climate.demo_bedroom_ac", sel);
+    }
+  });
+
+  it("leaves boost, minus, plus, power and AUTO doing their own job", () => {
+    const expected = {
+      boost: "climate.set_preset_mode",
+      minus: "input_number.set_value",
+      plus: "input_number.set_value",
+      power: "homeassistant.toggle",
+      auto: "homeassistant.toggle",
+    };
+    for (const [name, service] of Object.entries(expected)) {
+      const hass = makeHass();
+      const m = mount(oneRoom(), hass, 520);
+      m.refs(0)[name].click();
+      assert.equal(hass.calls.length, 1, `${name} should fire one call, not two`);
+      const c = hass.calls[0];
+      assert.equal(`${c.domain}.${c.service}`, service, name);
+    }
+  });
+
+  it("toggles the room that was tapped, not the first one", () => {
+    const hass = makeHass();
+    const m = mount(DEMO_CONFIG, hass, 520);
+    m.rows()[2].click();
+    assert.equal(hass.calls.length, 1);
+    assert.equal(hass.calls[0].target.entity_id, "climate.demo_living_room_ac");
+  });
+
+  it("ignores a tap on the padding of a multi-room card, where it is ambiguous", () => {
+    const hass = makeHass();
+    const m = mount(DEMO_CONFIG, hass, 520);
+    m.q(".surface").click();
+    assert.equal(hass.calls.length, 0, "no room could be meant, so nothing happens");
+  });
+
+  it("still honours an explicit tap_action on the full card", () => {
+    const hass = makeHass();
+    const m = mount({ ...oneRoom(), tap_action: { action: "more-info" } }, hass, 520);
     let opened = null;
     m.card.addEventListener("hass-more-info", (e) => {
       opened = e.detail.entityId;
     });
-    m.q(".surface").click();
-    assert.equal(opened, "climate.demo_bedroom_ac", "the full card must not start toggling");
-    assert.equal(hass.calls.length, 0, "tapping the full card body calls no service");
+    m.q(".roomrow").click();
+    assert.equal(opened, "climate.demo_bedroom_ac");
+    assert.equal(hass.calls.length, 0, "more-info must not also toggle");
+  });
+
+  it("makes every row a keyboard control", () => {
+    const hass = makeHass();
+    const m = mount(DEMO_CONFIG, hass, 520);
+    for (const row of m.rows()) {
+      assert.equal(row.getAttribute("role"), "button");
+      assert.equal(row.getAttribute("tabindex"), "0");
+      assert.ok(row.hasAttribute("aria-pressed"), "a row should say whether its unit is on");
+    }
+    m.rows()[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    assert.equal(hass.calls.length, 1);
+    assert.equal(hass.calls[0].target.entity_id, "climate.demo_office_ac");
   });
 
   it("asks for a narrow, content-sized slot so several sit in a row", () => {
@@ -1588,7 +1656,7 @@ describe("stacked controls", () => {
     const wide = mount(oneRoom(), offHass(), 900);
     await frame();
 
-    assert.close(shift(narrow), -10, 0.4, "a narrow card should lift OFF by 10px");
+    assert.close(shift(narrow), -20, 0.4, "a narrow card should lift OFF by 20px");
     assert.close(shift(wide), -4, 0.4, "a wide card should lift it by 4px");
     // Straight line between the two ends, so no width steps: the lift shrinks
     // monotonically (towards zero) as the card gets wider.
@@ -1617,14 +1685,31 @@ describe("stacked controls", () => {
     return baseline + (tm.actualBoundingBoxDescent - tm.actualBoundingBoxAscent) / 2;
   }
 
-  it("centres OFF on the boost square at the widths it is read at", async () => {
+  /** Right edge of the glyph ink, for the same reason inkCentre exists. */
+  function inkRight(el) {
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const tm = ctx.measureText(el.textContent);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().left + tm.actualBoundingBoxRight;
+  }
+  it("sits OFF above the boost square on a narrow card, not level with it", async () => {
     for (const w of [500, 520, 560]) {
       const m = mount(oneRoom(), offHass(), w);
       await frame();
       const word = inkCentre(m.q(".statusmain"));
       const boost = m.refs(0).boost.getBoundingClientRect();
-      const off = word - (boost.top + boost.height / 2);
-      assert.ok(Math.abs(off) <= 3, `OFF is ${off.toFixed(1)}px off the boost centre at ${w}px`);
+      const above = boost.top + boost.height / 2 - word;
+      assert.ok(
+        above >= 6 && above <= 16,
+        `OFF sits ${above.toFixed(1)}px above the boost centre at ${w}px`,
+      );
+      // It rides up level with the target block, so the horizontal gap is what
+      // keeps them apart -- there is no vertical clearance left to rely on.
+      const gap = m.refs(0).target.getBoundingClientRect().left - inkRight(m.q(".statusmain"));
+      assert.ok(gap > 40, `only ${gap.toFixed(1)}px between OFF and the target phrase at ${w}px`);
     }
   });
 

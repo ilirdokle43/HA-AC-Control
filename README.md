@@ -10,6 +10,7 @@ target, how far apart they are, the current HVAC mode, and four touch-sized cont
 Everything is picked from dropdowns in a GUI editor, so no hand-written YAML is
 required. One file, no build step, no external dependencies.
 
+Tapping a room anywhere that is not one of its buttons turns that unit on or off.
 The controls sit two-by-two beside the text — minus and plus above, power and AUTO
 below — which leaves each button roughly twice the area of a single row of four,
 and hands the width it saves back to the temperatures.
@@ -107,7 +108,7 @@ The same tiles on a light theme:
 | `temperature_step` | `0.5` | How much − and + move the target helper. |
 | `show_name` | `true` | Show the room name line. |
 | `show_boost` | `true` | Show the boost button on units that support the preset. |
-| `tap_action` | `more-info`, or `toggle` in compact | Standard HA action config for taps on the card body. The compact tile toggles the unit unless you set something else. |
+| `tap_action` | `toggle` | Standard HA action config for taps on the card body — every part of a room except boost, −, +, power and AUTO. Set `more-info` to open the dialog instead. |
 
 ### Room options
 

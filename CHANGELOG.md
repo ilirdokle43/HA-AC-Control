@@ -4,6 +4,23 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18.1
+
+### Changed
+
+- **Tapping a room turns that unit on or off.** Every part of a room row counts —
+  the fan, the name, either temperature, the difference badge, the status line —
+  except the five buttons, which go on doing their own job: boost, −, +, power and
+  AUTO. On a multi-room card the row under the pointer decides which unit is
+  toggled, rather than the first room as before; a tap on the card's own padding
+  toggles a single-room card and is ignored on a multi-room one, where there is no
+  way to tell which unit was meant. `tap_action: more-info` restores the old
+  behaviour.
+- Each room row is now the focusable control, with its own `aria-pressed` and a
+  label that says what a tap will do. The card body used to be one big button.
+- The word `OFF` sits 10px higher again on cards up to 560px wide; wider cards are
+  unchanged.
+
 ## 2026.8.18
 
 ### Added
