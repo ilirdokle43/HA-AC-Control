@@ -38,7 +38,10 @@ The same tiles on a light theme:
 ## Features
 
 - **One card, many rooms.** Rooms are separated by a thin divider; the card height
-  follows the number of rooms.
+  follows the number of rooms. Stacked, the card tightens up: the first row sits
+  against the top edge and the last against the bottom, and the difference badge
+  moves onto the status line so the target can stay beside the room temperature.
+  A single-room card keeps its roomier spacing.
 - **Difference badge** — `▲ 6.5°` when the room is warmer than the target, `▼ 0.2°`
   when it is colder, `at target` when it is there. Never renders `NaN` or `unknown`.
 - **Spinning fan** in a rounded square, tinted by HVAC mode and gently glowing
@@ -53,7 +56,8 @@ The same tiles on a light theme:
 - **Four controls per room** — minus, plus, power and AUTO. Beside the text they
   stack two-by-two so each button gets roughly double the area; on a phone they
   drop to a single row on their own line.
-- **Live status line** — `COOL · HIGH · BOOST · 17°`, built in priority order from
+- **Live status line** — `COOL · HIGH · BOOST · 17°`, over two lines on the full
+  card, built in priority order from
   the unit's own `hvac` mode, `fan_mode`, `preset_mode` and setpoint. Fan-speed
   names are normalised (`medium` and `mid` both read `MID`), any active preset is
   shown rather than boost alone, and anything the integration does not report is

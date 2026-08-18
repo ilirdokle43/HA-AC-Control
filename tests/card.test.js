@@ -1342,6 +1342,230 @@ describe("compact layout", () => {
   });
 });
 
+describe("two-line status", () => {
+  const forState = (state, attrs, w = 520) => {
+    const s = demoStates();
+    s["climate.demo_bedroom_ac"] = climate(state, attrs);
+    return mount(oneRoom(), makeHass(s), w);
+  };
+  const lines = (m) =>
+    [...m.q(".status").querySelectorAll(".statusline")].map((l) => l.textContent.trim());
+
+  it("puts mode and fan on the first line, the rest on the second", () => {
+    const m = forState("cool", { fan_mode: "high", preset_mode: "boost", temperature: 17 });
+    const [one, two] = lines(m);
+    assert.equal(one.replace(/s+/g, " "), "COOL · HIGH");
+    assert.equal(two, "BOOST · 17°");
+  });
+
+  it("drops to the setpoint alone when there is no special mode", () => {
+    const m = forState("cool", { fan_mode: "low", preset_mode: "none", temperature: 22 });
+    const [one, two] = lines(m);
+    assert.equal(one.replace(/s+/g, " "), "COOL · LOW");
+    assert.equal(two, "22°");
+  });
+
+  it("says one word on the first line and nothing on the second when off", () => {
+    const m = forState("off", {});
+    const [one, two] = lines(m);
+    assert.equal(one, "OFF");
+    assert.equal(two, "", "an off unit has nothing for the second line");
+  });
+
+  it("holds the second line open so an off room is the same height as a running one", async () => {
+    for (const w of [470, 520, 620, 820, 1024]) {
+      const off = forState("off", {}, w);
+      const run = forState("cool", { fan_mode: "high", preset_mode: "boost", temperature: 17 }, w);
+      await frame();
+      const a = off.card.getBoundingClientRect().height;
+      const b = run.card.getBoundingClientRect().height;
+      assert.ok(
+        Math.abs(a - b) <= 2.5,
+        `off ${a.toFixed(1)}px vs running ${b.toFixed(1)}px at ${w}px`,
+      );
+    }
+  });
+
+  it("keeps the compact tile on one line", () => {
+    const s = demoStates();
+    s["climate.demo_bedroom_ac"] = climate("cool", { fan_mode: "high", preset_mode: "boost", temperature: 17 });
+    const m = mount({ ...oneRoom(), layout: "compact" }, makeHass(s), 230);
+    assert.notOk(m.q(".statusline"), "the tile does not take the two-line treatment");
+    const bits = m.qa(".cstatus .cbit").filter((b) => !b.hidden && b.textContent);
+    assert.equal(bits.map((b) => b.textContent).join(" · "), "COOL · HIGH · BOOST · 17°");
+  });
+
+  it("clips each line on its own, so a long preset cannot disturb the other", () => {
+    const m = forState("cool", { fan_mode: "silent", preset_mode: "extra_long_preset_name", temperature: 17.5 }, 470);
+    const [one] = lines(m);
+    assert.equal(one.replace(/s+/g, " "), "COOL · SILENT", "the first line is untouched");
+    const two = m.q(".statusline.two");
+    assert.equal(getComputedStyle(two).overflow, "hidden");
+    assert.equal(getComputedStyle(two).textOverflow, "ellipsis");
+  });
+});
+
+
+describe("stacked rooms", () => {
+  const pad = (el) => {
+    const cs = getComputedStyle(el);
+    return { top: parseFloat(cs.paddingTop), bottom: parseFloat(cs.paddingBottom) };
+  };
+
+  it("marks the list so the stylesheet can tell one room from several", () => {
+    assert.notOk(
+      mount(oneRoom(), makeHass(), 520).q(".rooms").classList.contains("multi"),
+      "a single room is not a stack",
+    );
+    assert.ok(mount(DEMO_CONFIG, makeHass(), 520).q(".rooms").classList.contains("multi"));
+  });
+
+  it("trims the outer edges of a stack, not the gaps between its rows", async () => {
+    for (const w of [380, 520, 700, 1024]) {
+      const m = mount(DEMO_CONFIG, makeHass(), w);
+      await frame();
+      const rows = m.rows();
+      const first = pad(rows[0]);
+      const middle = pad(rows[1]);
+      const last = pad(rows[rows.length - 1]);
+      assert.ok(first.top <= 3.5, `first row keeps ${first.top}px above it at ${w}px`);
+      assert.ok(last.bottom <= 3.5, `last row keeps ${last.bottom}px below it at ${w}px`);
+      // The divider still gets real space either side, and the same on both.
+      assert.ok(middle.top >= 7, `divider is cramped at ${w}px`);
+      assert.close(first.bottom, middle.top, 0.6, `divider not centred at ${w}px`);
+      assert.close(middle.bottom, last.top, 0.6, `divider not centred at ${w}px`);
+    }
+  });
+
+  it("moves the badge onto the status line once rooms are stacked", async () => {
+    for (const w of [380, 520, 700, 1024]) {
+      const m = mount(DEMO_CONFIG, makeHass(), w);
+      await frame();
+      const r = m.refs(0);
+      assert.equal(r.delta.parentElement.className, "roomtext", "badge is its own grid item");
+      const badge = r.delta.getBoundingClientRect();
+      const status = r.status.getBoundingClientRect();
+      const target = r.target.getBoundingClientRect();
+      // Beside the status, not under the target.
+      assert.ok(badge.top >= target.bottom - 0.5, `badge still sits with the target at ${w}px`);
+      assert.ok(
+        badge.top < status.bottom - 0.5 && status.top < badge.bottom - 0.5,
+        `badge is not on the status line at ${w}px`,
+      );
+      assert.ok(badge.left >= status.right - 0.5, `badge overlaps the status text at ${w}px`);
+    }
+  });
+
+  /** Middle of a line's glyphs, relative to its row. Boxes are no use here:
+   *  the OFF line box is deliberately shorter than the word inside it. */
+  function lineCentre(row) {
+    const el = row.querySelector(".statusline.one");
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const tm = ctx.measureText(el.textContent);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const box = range.getBoundingClientRect();
+    const base =
+      box.top +
+      (box.height - (tm.fontBoundingBoxAscent + tm.fontBoundingBoxDescent)) / 2 +
+      tm.fontBoundingBoxAscent;
+    const centre = base + (tm.actualBoundingBoxDescent - tm.actualBoundingBoxAscent) / 2;
+    return centre - row.getBoundingClientRect().top;
+  }
+
+  it("drops OFF onto the line a running unit's status sits on", async () => {
+    for (const w of [380, 520, 700, 1024]) {
+      const s = demoStates();
+      s["climate.demo_bedroom_ac"] = climate("off");
+      s["climate.demo_office_ac"] = climate("cool", {
+        hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
+      });
+      const m = mount(DEMO_CONFIG, makeHass(s), w);
+      await frame();
+      const rows = m.rows();
+      const gap = lineCentre(rows[1]) - lineCentre(rows[0]);
+      assert.ok(
+        Math.abs(gap) <= 2,
+        `OFF sits ${gap.toFixed(1)}px off the running status line at ${w}px`,
+      );
+      // Nudged, not re-laid-out. Row heights are not compared here: the first
+      // row of a stack is deliberately shorter, its top padding being trimmed,
+      // so that comparison belongs with the stacking tests and not this one.
+      const t = getComputedStyle(rows[0].querySelector(".status")).transform;
+      assert.ok(t !== "none", `OFF should be nudged at ${w}px`);
+    }
+  });
+
+  it("leaves the ON state and the single-room card where they were", async () => {
+    const running = () => {
+      const s = demoStates();
+      s["climate.demo_bedroom_ac"] = climate("cool", { hvac_action: "cooling", fan_mode: "high" });
+      return makeHass(s);
+    };
+    const stacked = mount(DEMO_CONFIG, running(), 520);
+    await frame();
+    assert.equal(
+      getComputedStyle(stacked.refs(0).status).transform,
+      "none",
+      "a running status is not nudged in a stack",
+    );
+    const single = mount(oneRoom(), running(), 520);
+    await frame();
+    assert.ok(
+      getComputedStyle(single.refs(0).status).transform !== "none",
+      "the single-room card keeps its own lift",
+    );
+  });
+
+
+  it("keeps the badge under the target on a single-room card", async () => {
+    const m = mount(oneRoom(), makeHass(), 520);
+    await frame();
+    assert.equal(
+      m.refs(0).delta.parentElement.className,
+      "targetline",
+      "a single room keeps the original markup",
+    );
+  });
+
+
+  it("leaves a single-room card exactly as it was", async () => {
+    // The numbers a one-room card was tuned to, per width.
+    const want = { 380: [2, 2], 520: [11, 11], 700: [15, 15], 1024: [18, 18] };
+    for (const [w, [top, bottom]] of Object.entries(want)) {
+      const m = mount(oneRoom(), makeHass(Number(w)), Number(w));
+      await frame();
+      const p0 = pad(m.rows()[0]);
+      assert.close(p0.top, top, 0.6, `single-room top padding at ${w}px`);
+      assert.close(p0.bottom, bottom, 0.6, `single-room bottom padding at ${w}px`);
+    }
+  });
+
+  it("is shorter than it was, without cramping anything", async () => {
+    for (const w of [380, 520, 700, 1024]) {
+      const m = mount(DEMO_CONFIG, makeHass(), w);
+      await frame();
+      const rows = m.rows();
+      // Rows must not touch each other, and the controls must clear the divider.
+      for (let i = 1; i < rows.length; i++) {
+        const above = rows[i - 1].getBoundingClientRect();
+        const here = rows[i].getBoundingClientRect();
+        assert.ok(here.top >= above.bottom - 0.5, `rows ${i - 1}/${i} collide at ${w}px`);
+      }
+      for (const [i] of rows.entries()) {
+        const r = m.refs(i);
+        assert.notOk(rects(r.text, r.controls).overlap, `text meets controls in row ${i} at ${w}px`);
+        assert.notOk(rects(r.statusCol, r.text).overlap, `fan column meets text in row ${i} at ${w}px`);
+      }
+      const surface = m.q(".surface");
+      assert.ok(surface.scrollWidth <= surface.clientWidth + 1, `horizontal overflow at ${w}px`);
+    }
+  });
+});
+
+
 describe("card chrome", () => {
   // Regression: ha-card animates its border over 0.3s, and before the theme's
   // custom properties resolve the border computes to its initial value -- 3px
@@ -1561,9 +1785,11 @@ describe("stacked controls", () => {
     assert.ok(font(wide, ".targetline") > font(wide, ".status"), "target leads the status line");
   });
 
+  // Single-room only: with rooms stacked the badge moves down to the status
+  // line, where it is the one thing narrow enough to share that row.
   it("stacks the difference under the target instead of beside it", async () => {
     for (const w of [470, 520, 700, 1024]) {
-      const m = mount(DEMO_CONFIG, makeHass(), w);
+      const m = mount(oneRoom(), makeHass(), w);
       await frame();
       const r = m.refs(0);
       const tgt = r.target.getBoundingClientRect();
@@ -1646,6 +1872,63 @@ describe("stacked controls", () => {
     return makeHass(s);
   };
 
+  it("sits a running status level with the boost square, like OFF does", async () => {
+    const shift = (el) => {
+      const t = getComputedStyle(el).transform;
+      return t === "none" ? 0 : parseFloat(t.split(",")[5]);
+    };
+    for (const [w, want] of [[500, -27], [560, -27], [620, -27], [720, -4], [1024, -4]]) {
+      const s = demoStates();
+      s["climate.demo_bedroom_ac"] = climate("cool", {
+        hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
+      });
+      const m = mount(oneRoom(), makeHass(s), w);
+      await frame();
+      assert.close(shift(m.refs(0).status), want, 0.6, `running status lift at ${w}px`);
+
+      // Splitting the line in two is what allows the rise: the first line is
+      // now short enough to pass the difference badge on the left of it.
+      const first = inkRect(m.q(".statusline.one"));
+      assert.ok(
+        first.right <= m.refs(0).delta.getBoundingClientRect().left + 0.5,
+        `the first line runs under the badge at ${w}px`,
+      );
+      // And it must stay clear of the room temperature above it.
+      const gap = first.top - inkBottom(m.q(".big.cur"));
+      assert.ok(gap > 10, `only ${gap.toFixed(1)}px between the status and the temperature at ${w}px`);
+    }
+  });
+
+  it("centres that block on the boost square at the widths it was tuned for", async () => {
+    for (const w of [500, 560, 620]) {
+      const s = demoStates();
+      s["climate.demo_bedroom_ac"] = climate("cool", {
+        hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
+      });
+      const m = mount(oneRoom(), makeHass(s), w);
+      await frame();
+      const one = inkRect(m.q(".statusline.one"));
+      const two = inkRect(m.q(".statusline.two"));
+      const boost = m.refs(0).boost.getBoundingClientRect();
+      const off = (one.top + two.bottom) / 2 - (boost.top + boost.height / 2);
+      // Roughly level, not exactly: where the block lands moves a few pixels
+      // between a bare page and this one, so the check is that it sits with
+      // the square rather than a line below it. It used to be a full line adrift.
+      assert.ok(Math.abs(off) <= 10, `status is ${off.toFixed(1)}px off the boost centre at ${w}px`);
+    }
+  });
+
+  it("does not double-lift the OFF line", async () => {
+    const s = demoStates();
+    s["climate.demo_bedroom_ac"] = climate("off");
+    const m = mount(oneRoom(), makeHass(s), 520);
+    await frame();
+    const t = getComputedStyle(m.refs(0).status).transform;
+    const lift = t === "none" ? 0 : parseFloat(t.split(",")[5]);
+    assert.close(lift, -20, 0.4, "OFF keeps its own lift, not that plus the running nudge");
+  });
+
+
   it("lifts OFF further on a narrow card than on a wide one", async () => {
     const shift = (m) => {
       const t = getComputedStyle(m.refs(0).status).transform;
@@ -1684,6 +1967,50 @@ describe("stacked controls", () => {
       tm.fontBoundingBoxAscent;
     return baseline + (tm.actualBoundingBoxDescent - tm.actualBoundingBoxAscent) / 2;
   }
+
+  /**
+   * The rectangle the text of an element actually paints into: the range gives
+   * the horizontal extent, font metrics give the vertical. Element boxes are
+   * useless here -- the status line's box is far taller than its text and
+   * overlaps its neighbours by design.
+   */
+  function inkRect(el) {
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const tm = ctx.measureText(el.textContent);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const box = range.getBoundingClientRect();
+    const base =
+      box.top +
+      (box.height - (tm.fontBoundingBoxAscent + tm.fontBoundingBoxDescent)) / 2 +
+      tm.fontBoundingBoxAscent;
+    return {
+      left: box.left,
+      right: box.right,
+      top: base - tm.actualBoundingBoxAscent,
+      bottom: base + tm.actualBoundingBoxDescent,
+    };
+  }
+
+  /** Top and bottom of the glyph ink, for comparing what is actually drawn. */
+  function inkEdges(el) {
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const tm = ctx.measureText(el.textContent);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const box = range.getBoundingClientRect();
+    const base =
+      box.top +
+      (box.height - (tm.fontBoundingBoxAscent + tm.fontBoundingBoxDescent)) / 2 +
+      tm.fontBoundingBoxAscent;
+    return { top: base - tm.actualBoundingBoxAscent, bottom: base + tm.actualBoundingBoxDescent };
+  }
+  const inkTop = (el) => inkEdges(el).top;
+  const inkBottom = (el) => inkEdges(el).bottom;
 
   /** Right edge of the glyph ink, for the same reason inkCentre exists. */
   function inkRight(el) {
@@ -1958,8 +2285,12 @@ describe("compact status line", () => {
     const comp = tile("cool", { fan_mode: "high", preset_mode: "boost", temperature: 17 });
 
     assert.equal(full.statusMain.textContent, "COOL");
-    assert.equal(full.status.textContent, "COOL · HIGH · BOOST · 17°");
-    assert.equal(comp.text(), full.status.textContent, "one implementation, two layouts");
+    // The full card sets it over two lines, so read them as lines and rejoin.
+    const fullLines = [...full.status.querySelectorAll(".statusline")]
+      .filter((l) => !l.hidden && l.textContent)
+      .map((l) => l.textContent.trim().replace(/^·s*/, ""));
+    assert.equal(fullLines.join(" · "), "COOL · HIGH · BOOST · 17°");
+    assert.equal(comp.text(), fullLines.join(" · "), "one implementation, two layouts");
   });
 
   it("announces the whole status even when the visible line is trimmed", async () => {

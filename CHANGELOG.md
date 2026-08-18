@@ -4,6 +4,37 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18.2
+
+Layout work on the stacked (multi-room) card. A card with one room is untouched
+throughout — every change here hangs off a `multi` marker on the room list.
+
+### Changed
+
+- **A stacked card is 21–38px shorter.** The rules that pulled the first row up
+  against the top padding and the last row down against the bottom were being
+  overridden from 431px up by the wide tier's own row-padding shorthand, so the
+  surface's padding and the row's were simply added together at both ends. The
+  outer edges are trimmed again, and the space either side of the divider is a
+  little smaller: at 520px a two-room card is 313.5 → 278.7px, at 1024px
+  454.5 → 416.5px.
+- **The difference badge moves onto the status line when rooms are stacked**, with
+  `Target 20.0°` staying up beside the room temperature. It is the only one of
+  the three arrangements that fits the widths this card is used at — putting the
+  status, target and badge on one row needs about 566px of text column and there
+  is at most 498px. A single-room card keeps the badge under the target.
+- **The status is set over two lines** — mode and fan speed, then any special mode
+  and the setpoint — and sits level with the boost square beside it.
+- **OFF drops onto the line a running unit's status occupies**, by 6.5px at a phone
+  width up to 12px at a desktop one. It is set at twice the size in a
+  deliberately short line box, so it was riding that far above its neighbours.
+
+### Fixed
+
+- Two-line and single-line status now share one labelled helper
+  (`_statusParts`), so the full card and the compact tile cannot describe a unit
+  differently.
+
 ## 2026.8.18.1
 
 ### Changed

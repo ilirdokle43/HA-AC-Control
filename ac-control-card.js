@@ -28,7 +28,7 @@
  */
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2026.8.18.1";
+const CARD_VERSION = "2026.8.18.2";
 
 /* ------------------------------------------------------------------ config */
 
@@ -469,17 +469,22 @@ class AcControlCard extends HTMLElement {
    * A unit that is off or unavailable returns its single mode word and nothing
    * else — a stale fan speed next to OFF would be a lie.
    */
-  _statusBits(room) {
+  /**
+   * The same reading, labelled. The compact tile wants a flat list it can trim
+   * from the tail; the full card wants to know which part is which so it can
+   * put the mode and the fan on one line and the rest on the next.
+   */
+  _statusParts(room) {
     const mode = this._mode(room);
-    const bits = [mode.label];
-    if (!mode.available || !mode.on) return bits;
+    const parts = { mode: mode.label, fan: null, special: null, target: null };
+    if (!mode.available || !mode.on) return parts;
 
     const s = this._roomState(room, "climate_entity");
     const attrs = (s && s.attributes) || {};
 
     const fan = String(attrs.fan_mode === undefined ? "" : attrs.fan_mode).trim();
     if (fan && !NON_VALUES.has(fan.toLowerCase())) {
-      bits.push(FAN_LABELS[fan.toLowerCase()] || fan.toUpperCase());
+      parts.fan = FAN_LABELS[fan.toLowerCase()] || fan.toUpperCase();
     }
 
     // Whatever preset the integration says is running. Only presets that mean
@@ -487,9 +492,9 @@ class AcControlCard extends HTMLElement {
     // while ECO / SLEEP / TURBO on units that expose them show up too. Nothing
     // is inferred: no preset attribute means no special mode.
     const preset = String(attrs.preset_mode === undefined ? "" : attrs.preset_mode).trim();
-    const p = preset.toLowerCase();
-    if (preset && !NON_VALUES.has(p) && !NEUTRAL_PRESETS.has(p)) {
-      bits.push(preset.toUpperCase().replace(/[_-]+/g, " "));
+    const pre = preset.toLowerCase();
+    if (preset && !NON_VALUES.has(pre) && !NEUTRAL_PRESETS.has(pre)) {
+      parts.special = preset.toUpperCase().replace(/[_-]+/g, " ");
     }
 
     // The unit's own setpoint, which is not the same number as the card's
@@ -498,9 +503,14 @@ class AcControlCard extends HTMLElement {
     // the last setpoint there, and printing it would read as a temperature the
     // unit is working towards.
     if (s.state !== "fan_only" && isNumeric(attrs.temperature)) {
-      bits.push(this._setpointText(Number(attrs.temperature), this._degree(room)));
+      parts.target = this._setpointText(Number(attrs.temperature), this._degree(room));
     }
-    return bits;
+    return parts;
+  }
+
+  _statusBits(room) {
+    const p = this._statusParts(room);
+    return [p.mode, p.fan, p.special, p.target].filter(Boolean);
   }
 
   /**
@@ -841,7 +851,7 @@ class AcControlCard extends HTMLElement {
     return { col, box, glyph: box.firstChild, boost };
   }
 
-  _buildRoomText() {
+  _buildRoomText(multi) {
     const text = el("div", "roomtext");
     const name = el("div", "name");
     const cur = el("div", "big cur");
@@ -849,13 +859,22 @@ class AcControlCard extends HTMLElement {
     const target = el("span", "target", "Target —");
     const delta = el("span", "delta");
     delta.hidden = true;
-    line.append(target, delta);
+    line.append(target);
     const status = el("div", "status");
+    const statusOne = el("div", "statusline one");
     const statusMain = el("span", "statusmain", "—");
     const statusSub = el("span", "statussub");
-    status.append(statusMain, statusSub);
-    text.append(name, cur, line, status);
-    return { text, name, cur, target, delta, status, statusMain, statusSub };
+    statusOne.append(statusMain, statusSub);
+    // Second line: the special mode and the setpoint. Hidden when there is
+    // neither, so an off unit stays a single word.
+    const statusTwo = el("div", "statusline two");
+    status.append(statusOne, statusTwo);
+    // Stacked, the badge sits on the status line instead of under the target:
+    // it is the one thing small enough to share that row, and moving it frees
+    // the line the target was hanging from.
+    if (multi) text.append(name, cur, line, delta, status);
+    else { line.append(delta); text.append(name, cur, line, status); }
+    return { text, name, cur, target, delta, status, statusMain, statusSub, statusTwo };
   }
 
   /**
@@ -1004,6 +1023,9 @@ class AcControlCard extends HTMLElement {
     this._el = { surface, notice, rooms: [] };
 
     const list = el("div", "rooms");
+    // Lets the stylesheet treat a stack of rooms differently from a single
+    // one without any of it depending on how many rooms there happen to be.
+    list.classList.toggle("multi", this._multi);
     for (const room of this._rooms) {
       const row = el("div", "roomrow");
       // Each row is its own control: a tap anywhere on it that is not one of
@@ -1019,7 +1041,7 @@ class AcControlCard extends HTMLElement {
         }
       });
       const status = this._buildStatusCol(room);
-      const t = this._buildRoomText();
+      const t = this._buildRoomText(this._multi);
       const c = this._buildControls(room);
       row.append(status.col, t.text, c.wrap);
       list.appendChild(row);
@@ -1036,6 +1058,7 @@ class AcControlCard extends HTMLElement {
         status: t.status,
         statusMain: t.statusMain,
         statusSub: t.statusSub,
+        statusTwo: t.statusTwo,
         minus: c.minus,
         plus: c.plus,
         power: c.power,
@@ -1213,13 +1236,20 @@ class AcControlCard extends HTMLElement {
     refs.modeGlyph.setAttribute("icon", this._iconFor(room));
     refs.modeGlyph.style.animation = this._fanSpin(room);
 
-    // Status: mode word, then the unit's own fan speed, special mode and
-    // setpoint as muted context. Built by the shared helper the compact tile
-    // uses, so the two layouts always describe the unit the same way.
-    const bits = this._statusBits(room);
-    refs.statusMain.textContent = bits[0];
+    // Status over two lines: what it is doing and how hard on the first,
+    // anything special and the setpoint on the second. Both come from the
+    // labelled helper the compact tile also reads, so the two layouts can
+    // never describe the unit differently.
+    const parts = this._statusParts(room);
+    refs.statusMain.textContent = parts.mode;
     refs.status.className = `status m-${mode.key}`;
-    refs.statusSub.textContent = bits.length > 1 ? ` · ${bits.slice(1).join(" · ")}` : "";
+    refs.statusSub.textContent = parts.fan ? ` · ${parts.fan}` : "";
+    const second = [parts.special, parts.target].filter(Boolean).join(" · ");
+    refs.statusTwo.textContent = second;
+    // Left in place when empty rather than hidden: every row keeps the same
+    // height whether its unit is running or off, which is the whole point of
+    // the rows lining up across a multi-room card.
+    refs.statusTwo.hidden = false;
 
     if (this._cfg.show_name === false) {
       refs.name.hidden = true;
@@ -1509,10 +1539,20 @@ class AcControlCard extends HTMLElement {
         text-transform: uppercase;
         color: var(--disabled-text-color, #6f6f6f);
         transition: color 0.3s ease;
+      }
+      /* Two lines: what it is doing and how hard, then anything special and the
+         setpoint. Each clips on its own so a long preset name cannot push the
+         other line about, and the second is simply absent when there is nothing
+         to put on it. A tight line-height keeps the pair close enough to read
+         as one block rather than two separate remarks. */
+      .statusline {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        line-height: 1.25;
       }
+      /* Holds its line even while empty, so rows keep a common height. */
+      .statusline.two { opacity: 0.85; min-height: 1.25em; }
       .statussub { opacity: 0.75; font-weight: 600; }
 
       /* ================================================= left status column */
@@ -2024,6 +2064,25 @@ class AcControlCard extends HTMLElement {
         /* The live operating state, 20% up from clamp(12px, 2.65cqi, 16px). */
         .surface:not(.compact) .status { font-size: clamp(14.4px, 3.18cqi, 19.2px); }
 
+        /* The running status line rises a little too, so a row with a unit on
+           does not read as bottom-heavy next to one showing OFF. Four pixels is
+           what the headroom allows: there are only six to eight above it before
+           it would run into the target block, and horizontally the two already
+           overlap, so they cannot simply sit side by side. It does not close
+           the gap to OFF -- that is twenty pixels up -- but it takes the edge
+           off the difference. A transform again, so no row changes height. */
+        /* Sit the pair of lines level with the boost square beside them, the
+           way the single OFF word does. Splitting the status in two is what
+           made this possible: the first line is now short enough to clear the
+           difference badge horizontally, so it can rise past it. Twelve pixels
+           does it between 500 and 620; above that the left column is tall
+           enough that the block is already level, so it eases back to the
+           four it had. Well clear of the room temperature above -- there are
+           thirty to forty pixels between them at every width. */
+        .surface:not(.compact) .status:not(.m-off) {
+          transform: translateY(clamp(-27px, calc(23cqi - 169.6px), -4px));
+        }
+
         /* A unit that is off has one word to say, so it says it at twice the
            size. Only the off state: a running unit's line is four items and
            UNAVAILABLE is a long word, and neither would survive the doubling.
@@ -2035,6 +2094,18 @@ class AcControlCard extends HTMLElement {
            which is why overflow goes back to visible: the hidden default here
            is for ellipsising a long running status, and it would clip the top
            and bottom off this one. */
+        .surface:not(.compact) .status.m-off .statusline {
+          line-height: 0.6;
+          overflow: visible;
+        }
+        /* The off state has nothing for the second line, but it still holds it
+           open -- at the ordinary status size, not at twice it, or an off room
+           would reserve twice the space a running one does and end up the
+           taller of the two. */
+        .surface:not(.compact) .status.m-off .statusline.two {
+          font-size: clamp(14.4px, 3.18cqi, 19.2px);
+          line-height: 1.25;
+        }
         .surface:not(.compact) .status.m-off {
           font-size: clamp(28.8px, 6.36cqi, 38.4px);
           line-height: 0.6;
@@ -2051,6 +2122,83 @@ class AcControlCard extends HTMLElement {
              and more lift would only pull it into the target line. */
           transform: translateY(clamp(-20px, calc(20cqi - 132px), -4px));
         }
+      }
+
+      /* ------------------------------------------------- stacked rooms */
+      /* The padding that frames a single room becomes a band of empty card
+         above the first row and below the last once rooms are stacked: the
+         surface's own padding and the row's are simply added together at both
+         ends. Trim just those two outer edges, and bring the rows a little
+         closer to the divider between them.
+
+         Only when there is more than one room. A single-room card keeps the
+         roomier spacing it was tuned for, which is why this hangs off .multi
+         rather than :first-child alone.
+
+         Written last so it wins over the wide tier's own row padding, which is
+         a shorthand and would otherwise put the outer edges back. */
+      .rooms.multi {
+        --acc-row-gap: 8px;
+        --acc-row-edge: 2px;
+      }
+      .rooms.multi .roomrow {
+        padding-top: var(--acc-row-gap);
+        padding-bottom: var(--acc-row-gap);
+      }
+      .rooms.multi .roomrow:first-child { padding-top: var(--acc-row-edge); }
+      .rooms.multi .roomrow:last-child { padding-bottom: var(--acc-row-edge); }
+
+      @container acc (min-width: 431px) {
+        .surface:not(.compact) .rooms.multi {
+          /* Grows with the card like the row padding it replaces, just less of
+             it: this is the space either side of the divider. */
+          --acc-row-gap: clamp(8px, 1.6cqi, 14px);
+          --acc-row-edge: 3px;
+        }
+      }
+
+      /* --------------------------------- stacked rooms: badge on the status */
+      /* The target stays with the temperature and the badge drops to the
+         status line, which is the only arrangement of the three that fits the
+         widths this card is used at: at 520px the text column is 271px, and
+         the target and badge together with the temperature would need 360.
+         Beside a short first status line the badge needs about 218px, so it
+         fits from the narrowest supported width up.
+
+         A single-room card keeps the badge under the target, where it was. */
+      .rooms.multi .roomtext {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "name   name"
+          "cur    target"
+          "status delta";
+        column-gap: clamp(8px, 1.6cqi, 16px);
+      }
+      .rooms.multi .name { grid-area: name; }
+      .rooms.multi .big.cur { grid-area: cur; }
+      .rooms.multi .status { grid-area: status; }
+      .rooms.multi .targetline {
+        grid-area: target;
+        justify-self: end;
+        flex-wrap: nowrap;
+      }
+      .rooms.multi .delta {
+        grid-area: delta;
+        justify-self: end;
+        align-self: start;
+      }
+      /* The badge shares the status row now, so lifting the status alone would
+         put the two out of line. Written to out-specify the lift itself, which
+         is the .surface:not(.compact) .status:not(.m-off) rule, which would
+         otherwise win and drag the text back over the temperature. */
+      .surface:not(.compact) .rooms.multi .status { transform: none; }
+      /* OFF is set at twice the size in a line box kept deliberately short, so
+         it rides high in its row -- about 7px above where a running unit's
+         status sits at a phone width, and 12px at a desktop one. Nudge it back
+         down onto that line so the two rows read as one list. Measured against
+         the glyph ink of both, and a transform so no row changes height. */
+      .surface:not(.compact) .rooms.multi .status.m-off {
+        transform: translateY(clamp(6.5px, 1.25cqi, 12px));
       }
 
       /* Safety net for engines without container queries. */
