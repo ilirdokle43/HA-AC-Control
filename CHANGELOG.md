@@ -4,6 +4,33 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18.3
+
+Vertical placement of the status block on the stacked (multi-room) card. A card
+with one room is untouched.
+
+### Fixed
+
+- **The status block sits on the rocket square beside it, at every card width.**
+  It was being placed by a single fixed offset, and the offset it needs is not
+  fixed: measured on a real dashboard from 440 to 940px it runs 6.9, 3.5, 1.8,
+  2.1, 4.2, 9.8, 17.7, 24.8, 26.0, 26.8px. The curve dips rather than climbing,
+  because the left column's squares grow steadily with the card while the text
+  beside them stops growing once its font clamps top out. One constant is
+  therefore right at one width and wrong everywhere else — off by 25px at the
+  extremes. It now follows the measured curve in four segments, landing within
+  0.7px from 320 to 940px.
+- **The difference badge moves with the status line it shares.** It is its own
+  grid item, so shifting the status alone left the two out of line by the full
+  offset on a wide card.
+
+### Changed
+
+- OFF is placed by the same rule as a running unit plus a small constant, rather
+  than being aligned to a running unit's first line. The two states differ in
+  height, so their rows differ in height, which puts the square each is measured
+  against in a different place; one offset cannot centre both.
+
 ## 2026.8.18.2
 
 Layout work on the stacked (multi-room) card. A card with one room is untouched

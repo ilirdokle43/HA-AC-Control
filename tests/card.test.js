@@ -1475,7 +1475,28 @@ describe("stacked rooms", () => {
     return centre - row.getBoundingClientRect().top;
   }
 
-  it("drops OFF onto the line a running unit's status sits on", async () => {
+  /** The vertical part of an element's transform, in px. */
+  function ty(el) {
+    const t = getComputedStyle(el).transform;
+    if (!t || t === "none") return 0;
+    const parts = t.slice(t.indexOf("(") + 1, t.lastIndexOf(")")).split(",");
+    return parts.length === 6 ? parseFloat(parts[5]) : 0;
+  }
+
+  /* Where the status ends up optically -- centred on the rocket square beside
+     it -- is checked against a real dashboard, not here. This page stubs
+     ha-icon, so its squares are not the size the frontend draws and the rocket
+     lands several pixels from where a dashboard puts it: about 4.6px out on a
+     380px card and 7.1px on a 520px one, growing with width. Measuring
+     centring here would only be measuring the stub.
+
+     What this page can check is the contract behind it, and every one of these
+     would have caught a real bug that shipped: that both states are nudged at
+     all, that OFF gets more than a running unit and by how much, that the
+     badge moves with the line it shares, and that the amount follows the card
+     width instead of being one constant that is right at a single size. */
+  it("nudges both states, badge included, by an amount that follows the card", async () => {
+    const seen = {};
     for (const w of [380, 520, 700, 1024]) {
       const s = demoStates();
       s["climate.demo_bedroom_ac"] = climate("off");
@@ -1484,21 +1505,39 @@ describe("stacked rooms", () => {
       });
       const m = mount(DEMO_CONFIG, makeHass(s), w);
       await frame();
-      const rows = m.rows();
-      const gap = lineCentre(rows[1]) - lineCentre(rows[0]);
+      // The compact tier is a different layout with no rocket square to line up
+      // against, so these rules deliberately do not reach it.
+      if (m.q(".surface").classList.contains("compact")) continue;
+      const off = m.refs(0);
+      const run = m.refs(1);
+      const offTy = ty(off.status);
+      const runTy = ty(run.status);
+
+      assert.ok(offTy > 0, `OFF should be nudged at ${w}px`);
+      assert.ok(runTy > 0, `a running status should be nudged too at ${w}px`);
+      assert.ok(offTy > runTy, `OFF should need more than a running unit at ${w}px`);
+
+      const extra = offTy - runTy;
       assert.ok(
-        Math.abs(gap) <= 2,
-        `OFF sits ${gap.toFixed(1)}px off the running status line at ${w}px`,
+        extra >= 6 && extra <= 14,
+        `OFF's extra is ${extra.toFixed(1)}px at ${w}px, outside the measured 6-14px band`,
       );
-      // Nudged, not re-laid-out. Row heights are not compared here: the first
-      // row of a stack is deliberately shorter, its top padding being trimmed,
-      // so that comparison belongs with the stacking tests and not this one.
-      const t = getComputedStyle(rows[0].querySelector(".status")).transform;
-      assert.ok(t !== "none", `OFF should be nudged at ${w}px`);
+
+      assert.equal(
+        ty(run.delta).toFixed(1),
+        runTy.toFixed(1),
+        `the badge should move with the status line it shares at ${w}px`,
+      );
+
+      seen[w] = runTy;
     }
+    assert.ok(
+      seen[1024] !== undefined && seen[520] !== undefined && seen[1024] > seen[520],
+      "the drop should follow the card's width, not be a single constant",
+    );
   });
 
-  it("leaves the ON state and the single-room card where they were", async () => {
+  it("nudges a running status too, and leaves the single-room card its own lift", async () => {
     const running = () => {
       const s = demoStates();
       s["climate.demo_bedroom_ac"] = climate("cool", { hvac_action: "cooling", fan_mode: "high" });
@@ -1506,10 +1545,14 @@ describe("stacked rooms", () => {
     };
     const stacked = mount(DEMO_CONFIG, running(), 520);
     await frame();
+    assert.ok(
+      getComputedStyle(stacked.refs(0).status).transform !== "none",
+      "a running status is nudged in a stack too, so it centres on its rocket square",
+    );
     assert.equal(
+      getComputedStyle(stacked.refs(0).delta).transform,
       getComputedStyle(stacked.refs(0).status).transform,
-      "none",
-      "a running status is not nudged in a stack",
+      "the badge moves with the status line it shares a row with",
     );
     const single = mount(oneRoom(), running(), 520);
     await frame();
@@ -1562,6 +1605,76 @@ describe("stacked rooms", () => {
       const surface = m.q(".surface");
       assert.ok(surface.scrollWidth <= surface.clientWidth + 1, `horizontal overflow at ${w}px`);
     }
+  });
+});
+
+
+describe("embedded font", () => {
+  const STYLE_ID = "ha-ac-control-embedded-font";
+
+  it("injects nothing while no font is embedded", () => {
+    mount(DEMO_CONFIG, makeHass(), 520);
+    assert.notOk(
+      document.getElementById(STYLE_ID),
+      "with no font data there should be no style node at all",
+    );
+  });
+
+  it("leaves every text element inheriting until a font is embedded", () => {
+    const m = mount(DEMO_CONFIG, makeHass(), 520);
+    for (const sel of [".name", ".big.cur", ".target", ".delta", ".status", ".ctl"]) {
+      const el = m.q(sel);
+      assert.ok(el, sel + " should exist");
+      // --acc-font is unset, so the declaration resolves to inherit and the
+      // family is whatever the dashboard uses -- not a hard-coded stack.
+      assert.equal(
+        getComputedStyle(el).fontFamily,
+        getComputedStyle(m.card).fontFamily,
+        sel + " should still inherit the page font",
+      );
+    }
+  });
+
+  it("registers the face once for the whole document, not once per card", () => {
+    // Stand in for the embedded data: the registration path is what matters,
+    // and it is identical whatever bytes are in the URL.
+    const inject = () => {
+      if (document.getElementById(STYLE_ID)) return;
+      const style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent =
+        "@font-face{font-family:'Choco Cooky';src:url(data:font/woff2;base64,AAAA) format('woff2')}" +
+        "ac-control-card{--acc-font:'Choco Cooky';}";
+      document.head.appendChild(style);
+    };
+    try {
+      for (let i = 0; i < 5; i++) inject();
+      assert.equal(
+        document.querySelectorAll("#" + STYLE_ID).length,
+        1,
+        "five registrations should leave exactly one style node",
+      );
+
+      // And the property crosses the shadow boundary onto the card's text.
+      const m = mount(DEMO_CONFIG, makeHass(), 520);
+      assert.match(getComputedStyle(m.q(".name")).fontFamily, /Choco Cooky/);
+      assert.match(getComputedStyle(m.q(".status")).fontFamily, /Choco Cooky/);
+      // Icons must not be dragged into it.
+      const icon = m.q(".modeicon ha-icon");
+      assert.notOk(
+        /Choco Cooky/.test(getComputedStyle(icon).fontFamily),
+        "an icon element must not take the text font",
+      );
+    } finally {
+      const node = document.getElementById(STYLE_ID);
+      if (node) node.remove();
+    }
+  });
+
+  it("ships with the markers the build script writes between", () => {
+    const src = AcControlCard.styles;
+    assert.ok(typeof src === "string", "styles should be a string");
+    assert.ok(src.includes("var(--acc-font, inherit)"), "text elements read the font variable");
   });
 });
 

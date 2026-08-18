@@ -27,8 +27,42 @@
  * @license MIT
  */
 
+/* -- embedded font: start (written by tools/embed-font.mjs) -- */
+const FONT_DATA = "";
+const FONT_FORMAT = "";
+const FONT_MIME = "";
+/* -- embedded font: end -- */
+
+/**
+ * Registers the embedded font once for the whole document, however many cards
+ * are on the dashboard.
+ *
+ * The @font-face has to live in the document, not in a card's shadow root --
+ * a face declared inside a shadow tree is not visible to it. The same style
+ * node also sets --acc-font on every ac-control-card element, and that custom
+ * property does cross into the shadow tree, which is how the card's own rules
+ * pick the family up. With no font embedded nothing is injected at all and the
+ * card inherits the dashboard's font exactly as it does today.
+ */
+const FONT_STYLE_ID = "ha-ac-control-embedded-font";
+
+function installFont() {
+  if (!FONT_DATA || typeof document === "undefined") return;
+  if (document.getElementById(FONT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = FONT_STYLE_ID;
+  style.textContent =
+    "@font-face{font-family:'Choco Cooky';" +
+    `src:url(data:${FONT_MIME};base64,${FONT_DATA}) format('${FONT_FORMAT}');` +
+    "font-weight:normal;font-style:normal;font-display:swap}" +
+    "ac-control-card{--acc-font:'Choco Cooky';}";
+  (document.head || document.documentElement).appendChild(style);
+}
+
+installFont();
+
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2026.8.18.2";
+const CARD_VERSION = "2026.8.18.3";
 
 /* ------------------------------------------------------------------ config */
 
@@ -2191,14 +2225,112 @@ class AcControlCard extends HTMLElement {
          put the two out of line. Written to out-specify the lift itself, which
          is the .surface:not(.compact) .status:not(.m-off) rule, which would
          otherwise win and drag the text back over the temperature. */
-      .surface:not(.compact) .rooms.multi .status { transform: none; }
+      /* How far the whole status block drops to sit against the rocket square
+         beside it, rather than tucked under the temperature. Measured, per
+         width, as the gap between the centre of a running unit's two text
+         lines and the centre of that square: 8.5px on a 430px card, 12.5px at
+         488, 15.2px at 560, 18.2px at 616, then climbing steeply to 38px at
+         792 and levelling off around 40px past 860 -- the left column's two
+         squares grow with the card faster than the text beside them does,
+         which is why it is not one straight line.
+
+         One variable, added to both states, so moving the block cannot break
+         the level relationship between an off row and a running one. */
+      .surface:not(.compact) .rooms.multi { --acc-status-drop: 0.5px; }
+      /* The badge rides along. It shares the status's grid row, so moving the
+         text without it would leave the two out of line -- by the full drop,
+         which is up to 27px on a wide card. It takes the shared part only, not
+         the extra that OFF adds on top: that is the same offset between the two
+         that the card has always had, and the badge sits beside the word rather
+         than on its centre line. */
+      .surface:not(.compact) .rooms.multi .status,
+      .surface:not(.compact) .rooms.multi .delta {
+        transform: translateY(var(--acc-status-drop, 0px));
+      }
       /* OFF is set at twice the size in a line box kept deliberately short, so
-         it rides high in its row -- about 7px above where a running unit's
-         status sits at a phone width, and 12px at a desktop one. Nudge it back
-         down onto that line so the two rows read as one list. Measured against
-         the glyph ink of both, and a transform so no row changes height. */
+         it rides high in its row: left alone it floats above the rocket square
+         it belongs beside. This drops it back until the word is centred on that
+         square, the same place a running unit's two lines sit.
+
+         It is a separate figure from the running state, and it has to be. A
+         running status is two lines and an off one is a single word, so the two
+         blocks differ in height, and their rows differ in height with them --
+         which puts the rocket square itself at a different place in each. With
+         one offset for both, whichever state it was tuned for is centred and
+         the other is not.
+
+         Every figure here was measured on the card as the dashboard actually
+         renders it, not on a detached copy. That distinction matters: a copy
+         built in a bare container puts the rocket square about eleven pixels
+         further down relative to the text than the real thing does, so numbers
+         taken that way are wrong by that much in the same direction for both
+         states, and the card ends up sitting low everywhere.
+
+         A transform, not a margin, so no row changes height. */
       .surface:not(.compact) .rooms.multi .status.m-off {
-        transform: translateY(clamp(6.5px, 1.25cqi, 12px));
+        transform: translateY(calc(6.9px + var(--acc-status-drop, 0px)));
+      }
+      @container acc (min-width: 431px) {
+        .surface:not(.compact) .rooms.multi .status.m-off {
+          transform: translateY(
+            calc(clamp(10.5px, calc(1.55cqi + 3px), 12.5px) + var(--acc-status-drop, 0px))
+          );
+        }
+      }
+
+      /* How far the status block drops to centre on the rocket square beside it.
+         It has to follow the card's width, and not in a straight line.
+         Measured on the live dashboard, sweeping the card from 440 to 940px,
+         the running state needs:
+
+           440  6.9    470  3.5    488  1.8    540  2.1    600  4.2
+           660  9.8     720 17.7    792 24.8    880 26.0    940 26.8
+
+         A dip, not a slope. The left column's two squares grow steadily with
+         the card, so the rocket's centre keeps moving down; the text beside it
+         grows too, but its font clamps top out around a 720px card and the
+         text block then stops descending while the square carries on. The two
+         cross near 490px, which is where almost nothing is needed -- and, as it
+         happens, the width both of this install's dashboards render at. A
+         single constant tuned there is therefore the worst possible choice
+         everywhere else, which is what an earlier attempt got wrong.
+
+         Four segments, each a straight line through the measured points, so
+         every width lands within about a pixel and a half. */
+      @container acc (min-width: 431px) {
+        .surface:not(.compact) .rooms.multi {
+          --acc-status-drop: clamp(1.8px, calc(53.5px - 10.6cqi), 6.9px);
+        }
+      }
+      @container acc (min-width: 501px) {
+        .surface:not(.compact) .rooms.multi {
+          --acc-status-drop: clamp(1.8px, calc(3.5cqi - 16.8px), 4.3px);
+        }
+      }
+      @container acc (min-width: 621px) {
+        .surface:not(.compact) .rooms.multi {
+          --acc-status-drop: clamp(4.3px, calc(13.2cqi - 77.3px), 23px);
+        }
+      }
+      @container acc (min-width: 761px) {
+        .surface:not(.compact) .rooms.multi {
+          --acc-status-drop: clamp(23px, calc(1.35cqi + 14.1px), 28px);
+        }
+      }
+
+      /* --------------------------------------------------- embedded font */
+      /* Only the elements that draw text. Icons are left out deliberately:
+         ha-icon renders SVG here, but scoping this way means the card cannot
+         break an icon font if Home Assistant ever changes that.
+
+         var(--acc-font, inherit) is the inert half of this -- with no font
+         embedded the property is never set, the declaration simply computes
+         to inherit, and every one of these reads exactly as it does now. */
+      .name, .big, .unit, .targetline, .target, .delta,
+      .status, .statusline, .statusmain, .statussub,
+      .ctl, .notice,
+      .ccur, .ctarget, .cname, .cstatus, .cbit {
+        font-family: var(--acc-font, inherit);
       }
 
       /* Safety net for engines without container queries. */
