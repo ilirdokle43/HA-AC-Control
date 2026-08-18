@@ -4,6 +4,31 @@ Releases from 2026.8.14 onwards are dated — `YYYY.M.D`, with a trailing counte
 (`YYYY.M.D.1`) when there is more than one release on the same day. Earlier
 releases used semantic versions.
 
+## 2026.8.18.4
+
+Spacing and layout of a card holding a single room. A stacked card is unchanged
+throughout.
+
+### Fixed
+
+- **A one-room card no longer carries a band of empty card at its ends.** Its
+  single row is both the first and the last, so it was taking a full row's
+  padding at each end -- and from 470px up that came from the wide tier's
+  shorthand, `clamp(11px, 2.1cqi, 18px)`, which out-specifies the 2px trim the
+  base rules apply. It now uses the same `--acc-row-edge` a stacked card does.
+  The surface's own vertical padding comes down with it, roughly 4px a side.
+
+### Changed
+
+- **A one-room card builds the same text block a stacked one does**, with the
+  difference badge as its own grid item on the status row rather than stacked
+  under the target. Stacking the two made `.targetline` 64px tall beside a 30px
+  temperature and left about 27px of nothing below everything the card drew. On
+  a 488px card the height goes 158 -> 133px, the ends even up at 14/13px, and
+  the card keeps that height whether the unit is off or running.
+- The status offsets are now shared by both kinds of card instead of a single
+  room having a set of its own, so one calibration serves both.
+
 ## 2026.8.18.3
 
 Vertical placement of the status block on the stacked (multi-room) card. A card

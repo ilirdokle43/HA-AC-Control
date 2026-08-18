@@ -1563,26 +1563,74 @@ describe("stacked rooms", () => {
   });
 
 
-  it("keeps the badge under the target on a single-room card", async () => {
-    const m = mount(oneRoom(), makeHass(), 520);
-    await frame();
-    assert.equal(
-      m.refs(0).delta.parentElement.className,
-      "targetline",
-      "a single room keeps the original markup",
-    );
+  it("gives a one-room card the same status offsets a stacked one gets", async () => {
+    // The two used to be placed by different rules -- a lift of its own for a
+    // single room, a drop for a stack. They build the same text block now, so
+    // the same figures have to serve both; anything else and one of them sits
+    // off its rocket square.
+    const shift = (el) => {
+      const t = getComputedStyle(el).transform;
+      if (!t || t === "none") return 0;
+      const parts = t.slice(t.indexOf("(") + 1, t.lastIndexOf(")")).split(",");
+      return parts.length === 6 ? parseFloat(parts[5]) : 0;
+    };
+    for (const w of [500, 620, 720, 1024]) {
+      for (const [label, state] of [["off", climate("off")], ["running", climate("cool", {
+        hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
+      })]]) {
+        const s1 = demoStates();
+        s1["climate.demo_bedroom_ac"] = state;
+        const one = mount(oneRoom(), makeHass(s1), w);
+        const many = mount(DEMO_CONFIG, makeHass(s1), w);
+        await frame();
+        if (one.q(".surface").classList.contains("compact")) continue;
+        assert.close(
+          shift(one.refs(0).status),
+          shift(many.refs(0).status),
+          0.6,
+          `${label}: one room and a stack disagree at ${w}px`,
+        );
+        assert.ok(shift(one.refs(0).status) > 0, `${label}: no offset at all at ${w}px`);
+        assert.close(
+          shift(one.refs(0).delta),
+          shift(many.refs(0).delta),
+          0.6,
+          `${label}: the badge disagrees at ${w}px`,
+        );
+      }
+    }
+  });
+
+  it("puts the badge on the status row whatever the room count", async () => {
+    // One room and several rooms build the same text block now. A lone room
+    // stacking the target over the badge made .targetline twice as tall as the
+    // temperature beside it, and left the card with a band of nothing below
+    // everything it draws.
+    for (const [label, cfg] of [["one room", oneRoom()], ["several rooms", DEMO_CONFIG]]) {
+      const m = mount(cfg, makeHass(), 520);
+      await frame();
+      assert.equal(
+        m.refs(0).delta.parentElement.className,
+        "roomtext",
+        `${label}: the badge should be its own grid item`,
+      );
+    }
   });
 
 
-  it("leaves a single-room card exactly as it was", async () => {
-    // The numbers a one-room card was tuned to, per width.
-    const want = { 380: [2, 2], 520: [11, 11], 700: [15, 15], 1024: [18, 18] };
+  it("trims a single-room card's ends the way a stacked one's are trimmed", async () => {
+    // A lone row is both the first and the last, so it was taking a full row's
+    // padding at each end -- and from 470px up that came from the wide tier's
+    // shorthand, which out-specifies the base 2px trim. It now uses the same
+    // --acc-row-edge the stacked card does: 2px, and 3px from 431px up.
+    const want = { 380: [2, 2], 520: [3, 3], 700: [3, 3], 1024: [3, 3] };
     for (const [w, [top, bottom]] of Object.entries(want)) {
       const m = mount(oneRoom(), makeHass(Number(w)), Number(w));
       await frame();
       const p0 = pad(m.rows()[0]);
       assert.close(p0.top, top, 0.6, `single-room top padding at ${w}px`);
       assert.close(p0.bottom, bottom, 0.6, `single-room bottom padding at ${w}px`);
+      assert.equal(p0.top, p0.bottom, `single-room ends are uneven at ${w}px`);
     }
   });
 
@@ -1900,16 +1948,20 @@ describe("stacked controls", () => {
 
   // Single-room only: with rooms stacked the badge moves down to the status
   // line, where it is the one thing narrow enough to share that row.
-  it("stacks the difference under the target instead of beside it", async () => {
+  it("sets the difference beside the status, clear of the target", async () => {
     for (const w of [470, 520, 700, 1024]) {
       const m = mount(oneRoom(), makeHass(), w);
       await frame();
       const r = m.refs(0);
       const tgt = r.target.getBoundingClientRect();
       const d = r.delta.getBoundingClientRect();
-      assert.ok(d.top >= tgt.bottom - 0.5, `badge is still beside the target at ${w}px`);
-      const off = Math.abs(d.left + d.width / 2 - (tgt.left + tgt.width / 2));
-      assert.ok(off < 1.5, `badge is ${off.toFixed(1)}px off centre at ${w}px`);
+      const status = r.status.getBoundingClientRect();
+      assert.ok(d.top >= tgt.bottom - 0.5, `badge still sits with the target at ${w}px`);
+      assert.ok(
+        d.top < status.bottom - 0.5 && status.top < d.bottom - 0.5,
+        `badge is not on the status line at ${w}px`,
+      );
+      assert.ok(d.left >= status.right - 0.5, `badge overlaps the status text at ${w}px`);
       // The phrase still lines up with the big temperature beside it.
       const big = m.q(".big.cur").getBoundingClientRect();
       assert.ok(Math.abs(tgt.top - big.top) < big.height * 0.5, `target lost its baseline at ${w}px`);
@@ -1985,32 +2037,6 @@ describe("stacked controls", () => {
     return makeHass(s);
   };
 
-  it("sits a running status level with the boost square, like OFF does", async () => {
-    const shift = (el) => {
-      const t = getComputedStyle(el).transform;
-      return t === "none" ? 0 : parseFloat(t.split(",")[5]);
-    };
-    for (const [w, want] of [[500, -27], [560, -27], [620, -27], [720, -4], [1024, -4]]) {
-      const s = demoStates();
-      s["climate.demo_bedroom_ac"] = climate("cool", {
-        hvac_action: "cooling", fan_mode: "high", preset_mode: "boost", temperature: 17,
-      });
-      const m = mount(oneRoom(), makeHass(s), w);
-      await frame();
-      assert.close(shift(m.refs(0).status), want, 0.6, `running status lift at ${w}px`);
-
-      // Splitting the line in two is what allows the rise: the first line is
-      // now short enough to pass the difference badge on the left of it.
-      const first = inkRect(m.q(".statusline.one"));
-      assert.ok(
-        first.right <= m.refs(0).delta.getBoundingClientRect().left + 0.5,
-        `the first line runs under the badge at ${w}px`,
-      );
-      // And it must stay clear of the room temperature above it.
-      const gap = first.top - inkBottom(m.q(".big.cur"));
-      assert.ok(gap > 10, `only ${gap.toFixed(1)}px between the status and the temperature at ${w}px`);
-    }
-  });
 
   it("centres that block on the boost square at the widths it was tuned for", async () => {
     for (const w of [500, 560, 620]) {
@@ -2031,35 +2057,8 @@ describe("stacked controls", () => {
     }
   });
 
-  it("does not double-lift the OFF line", async () => {
-    const s = demoStates();
-    s["climate.demo_bedroom_ac"] = climate("off");
-    const m = mount(oneRoom(), makeHass(s), 520);
-    await frame();
-    const t = getComputedStyle(m.refs(0).status).transform;
-    const lift = t === "none" ? 0 : parseFloat(t.split(",")[5]);
-    assert.close(lift, -20, 0.4, "OFF keeps its own lift, not that plus the running nudge");
-  });
 
 
-  it("lifts OFF further on a narrow card than on a wide one", async () => {
-    const shift = (m) => {
-      const t = getComputedStyle(m.refs(0).status).transform;
-      return t === "none" ? 0 : parseFloat(t.split(",")[5]);
-    };
-    const narrow = mount(oneRoom(), offHass(), 500);
-    const mid = mount(oneRoom(), offHass(), 600);
-    const wide = mount(oneRoom(), offHass(), 900);
-    await frame();
-
-    assert.close(shift(narrow), -20, 0.4, "a narrow card should lift OFF by 20px");
-    assert.close(shift(wide), -4, 0.4, "a wide card should lift it by 4px");
-    // Straight line between the two ends, so no width steps: the lift shrinks
-    // monotonically (towards zero) as the card gets wider.
-    assert.ok(shift(narrow) <= shift(mid) + 0.1, "narrow should lift at least as far as mid");
-    assert.ok(shift(mid) <= shift(wide) + 0.1, "mid should lift at least as far as wide");
-    assert.ok(shift(mid) < shift(wide) - 0.1, "mid should sit strictly between the two ends");
-  });
 
   /**
    * Middle of the word, by glyph ink rather than by box. The line box is
@@ -2135,19 +2134,20 @@ describe("stacked controls", () => {
     range.selectNodeContents(el);
     return range.getBoundingClientRect().left + tm.actualBoundingBoxRight;
   }
-  it("sits OFF above the boost square on a narrow card, not level with it", async () => {
+  it("keeps OFF clear of the target phrase beside it", async () => {
+    // Where OFF sits vertically is not asserted here. This page stubs ha-icon,
+    // so its squares are not the size the frontend draws and the rocket lands a
+    // few pixels from where a dashboard puts it -- 4.6px out on a 380px card,
+    // 7.1px on a 520px one, widening with the card. Measuring centring here
+    // would measure the stub. That the offsets match a stacked card's is
+    // covered by the parity test above, and the optical result is checked
+    // against a real dashboard.
+    //
+    // The horizontal clearance is a genuine invariant: OFF and the target
+    // phrase share a band of the card and only the gap keeps them apart.
     for (const w of [500, 520, 560]) {
       const m = mount(oneRoom(), offHass(), w);
       await frame();
-      const word = inkCentre(m.q(".statusmain"));
-      const boost = m.refs(0).boost.getBoundingClientRect();
-      const above = boost.top + boost.height / 2 - word;
-      assert.ok(
-        above >= 6 && above <= 16,
-        `OFF sits ${above.toFixed(1)}px above the boost centre at ${w}px`,
-      );
-      // It rides up level with the target block, so the horizontal gap is what
-      // keeps them apart -- there is no vertical clearance left to rely on.
       const gap = m.refs(0).target.getBoundingClientRect().left - inkRight(m.q(".statusmain"));
       assert.ok(gap > 40, `only ${gap.toFixed(1)}px between OFF and the target phrase at ${w}px`);
     }

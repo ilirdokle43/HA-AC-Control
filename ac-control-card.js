@@ -62,7 +62,7 @@ function installFont() {
 installFont();
 
 const CARD_TYPE = "ac-control-card";
-const CARD_VERSION = "2026.8.18.3";
+const CARD_VERSION = "2026.8.18.4";
 
 /* ------------------------------------------------------------------ config */
 
@@ -885,7 +885,7 @@ class AcControlCard extends HTMLElement {
     return { col, box, glyph: box.firstChild, boost };
   }
 
-  _buildRoomText(multi) {
+  _buildRoomText() {
     const text = el("div", "roomtext");
     const name = el("div", "name");
     const cur = el("div", "big cur");
@@ -903,11 +903,13 @@ class AcControlCard extends HTMLElement {
     // neither, so an off unit stays a single word.
     const statusTwo = el("div", "statusline two");
     status.append(statusOne, statusTwo);
-    // Stacked, the badge sits on the status line instead of under the target:
-    // it is the one thing small enough to share that row, and moving it frees
-    // the line the target was hanging from.
-    if (multi) text.append(name, cur, line, delta, status);
-    else { line.append(delta); text.append(name, cur, line, status); }
+    // The badge sits on the status line rather than under the target: it is the
+    // one thing small enough to share that row, and moving it frees the line
+    // the target was hanging from. Every card is built this way, however many
+    // rooms it holds -- a lone room stacking the target over the badge made
+    // .targetline 64px tall next to a 30px temperature, and left the card with
+    // about 27px of nothing below everything it draws.
+    text.append(name, cur, line, delta, status);
     return { text, name, cur, target, delta, status, statusMain, statusSub, statusTwo };
   }
 
@@ -1075,7 +1077,7 @@ class AcControlCard extends HTMLElement {
         }
       });
       const status = this._buildStatusCol(room);
-      const t = this._buildRoomText(this._multi);
+      const t = this._buildRoomText();
       const c = this._buildControls(room);
       row.append(status.col, t.text, c.wrap);
       list.appendChild(row);
@@ -2182,12 +2184,68 @@ class AcControlCard extends HTMLElement {
       .rooms.multi .roomrow:first-child { padding-top: var(--acc-row-edge); }
       .rooms.multi .roomrow:last-child { padding-bottom: var(--acc-row-edge); }
 
+      /* The same trim for a card holding one room. Its single row is both the
+         first and the last, so without this it takes a full row's padding at
+         both ends -- and from 470px up that is the wide tier's shorthand,
+         clamp(11px, 2.1cqi, 18px), which out-specifies the 2px trim the base
+         rules apply. That is exactly the overlap the stacked card fixes just
+         above; a single-room card was simply never included, which is why it
+         carried 21px of space at each end on a 488px card where a stacked one
+         carries 17px.
+
+         Written with the same variable and the same values, so the two kinds of
+         card end up with the same rhythm at their edges. */
+      .rooms:not(.multi) { --acc-row-edge: 2px; }
+      .rooms:not(.multi) .roomrow:first-child { padding-top: var(--acc-row-edge); }
+      .rooms:not(.multi) .roomrow:last-child { padding-bottom: var(--acc-row-edge); }
+      @container acc (min-width: 431px) {
+        .surface:not(.compact) .rooms:not(.multi) { --acc-row-edge: 3px; }
+      }
+
       @container acc (min-width: 431px) {
         .surface:not(.compact) .rooms.multi {
           /* Grows with the card like the row padding it replaces, just less of
              it: this is the space either side of the divider. */
           --acc-row-gap: clamp(8px, 1.6cqi, 14px);
           --acc-row-edge: 3px;
+        }
+      }
+
+      /* ------------------------------------------- single room: tighter ends */
+      /* A stacked card trims the band of empty card above the first row and
+         below the last (see .rooms.multi above). A single-room card was left
+         with the roomier original spacing, which reads as too much air around
+         one row -- on a 341px card, 16px above the content and 14px below for a
+         row only 136px tall.
+
+         Only the vertical padding comes down, and only when there is one room:
+         the horizontal is what keeps the text clear of the card edge, and the
+         stacked card's ends are already handled. Selected with :has() rather
+         than a new class so nothing in the render path changes; a browser
+         without :has() simply keeps the padding it has today.
+
+         The wide tier keeps growing with the card as before, just from a lower
+         base and to a lower cap. */
+      .surface:not(.compact):has(.rooms:not(.multi)) {
+        padding-top: 10px;
+        padding-bottom: 10px;
+      }
+      @container acc (max-width: 430px) {
+        .surface:not(.compact):has(.rooms:not(.multi)) {
+          padding-top: 8px;
+          padding-bottom: 8px;
+        }
+      }
+      @container acc (max-width: 280px) {
+        .surface:not(.compact):has(.rooms:not(.multi)) {
+          padding-top: 7px;
+          padding-bottom: 7px;
+        }
+      }
+      @container acc (min-width: 470px) {
+        .surface:not(.compact):has(.rooms:not(.multi)) {
+          padding-top: clamp(10px, 1.9cqi, 16px);
+          padding-bottom: clamp(10px, 1.9cqi, 16px);
         }
       }
 
@@ -2200,7 +2258,7 @@ class AcControlCard extends HTMLElement {
          fits from the narrowest supported width up.
 
          A single-room card keeps the badge under the target, where it was. */
-      .rooms.multi .roomtext {
+      .rooms .roomtext {
         grid-template-columns: minmax(0, 1fr) auto;
         grid-template-areas:
           "name   name"
@@ -2208,15 +2266,15 @@ class AcControlCard extends HTMLElement {
           "status delta";
         column-gap: clamp(8px, 1.6cqi, 16px);
       }
-      .rooms.multi .name { grid-area: name; }
-      .rooms.multi .big.cur { grid-area: cur; }
-      .rooms.multi .status { grid-area: status; }
-      .rooms.multi .targetline {
+      .rooms .name { grid-area: name; }
+      .rooms .big.cur { grid-area: cur; }
+      .rooms .status { grid-area: status; }
+      .rooms .targetline {
         grid-area: target;
         justify-self: end;
         flex-wrap: nowrap;
       }
-      .rooms.multi .delta {
+      .rooms .delta {
         grid-area: delta;
         justify-self: end;
         align-self: start;
@@ -2236,15 +2294,15 @@ class AcControlCard extends HTMLElement {
 
          One variable, added to both states, so moving the block cannot break
          the level relationship between an off row and a running one. */
-      .surface:not(.compact) .rooms.multi { --acc-status-drop: 0.5px; }
+      .surface:not(.compact) .rooms { --acc-status-drop: 0.5px; }
       /* The badge rides along. It shares the status's grid row, so moving the
          text without it would leave the two out of line -- by the full drop,
          which is up to 27px on a wide card. It takes the shared part only, not
          the extra that OFF adds on top: that is the same offset between the two
          that the card has always had, and the badge sits beside the word rather
          than on its centre line. */
-      .surface:not(.compact) .rooms.multi .status,
-      .surface:not(.compact) .rooms.multi .delta {
+      .surface:not(.compact) .rooms .status,
+      .surface:not(.compact) .rooms .delta {
         transform: translateY(var(--acc-status-drop, 0px));
       }
       /* OFF is set at twice the size in a line box kept deliberately short, so
@@ -2267,11 +2325,11 @@ class AcControlCard extends HTMLElement {
          states, and the card ends up sitting low everywhere.
 
          A transform, not a margin, so no row changes height. */
-      .surface:not(.compact) .rooms.multi .status.m-off {
+      .surface:not(.compact) .rooms .status.m-off {
         transform: translateY(calc(6.9px + var(--acc-status-drop, 0px)));
       }
       @container acc (min-width: 431px) {
-        .surface:not(.compact) .rooms.multi .status.m-off {
+        .surface:not(.compact) .rooms .status.m-off {
           transform: translateY(
             calc(clamp(10.5px, calc(1.55cqi + 3px), 12.5px) + var(--acc-status-drop, 0px))
           );
@@ -2298,22 +2356,22 @@ class AcControlCard extends HTMLElement {
          Four segments, each a straight line through the measured points, so
          every width lands within about a pixel and a half. */
       @container acc (min-width: 431px) {
-        .surface:not(.compact) .rooms.multi {
+        .surface:not(.compact) .rooms {
           --acc-status-drop: clamp(1.8px, calc(53.5px - 10.6cqi), 6.9px);
         }
       }
       @container acc (min-width: 501px) {
-        .surface:not(.compact) .rooms.multi {
+        .surface:not(.compact) .rooms {
           --acc-status-drop: clamp(1.8px, calc(3.5cqi - 16.8px), 4.3px);
         }
       }
       @container acc (min-width: 621px) {
-        .surface:not(.compact) .rooms.multi {
+        .surface:not(.compact) .rooms {
           --acc-status-drop: clamp(4.3px, calc(13.2cqi - 77.3px), 23px);
         }
       }
       @container acc (min-width: 761px) {
-        .surface:not(.compact) .rooms.multi {
+        .surface:not(.compact) .rooms {
           --acc-status-drop: clamp(23px, calc(1.35cqi + 14.1px), 28px);
         }
       }
